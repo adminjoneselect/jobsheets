@@ -174,7 +174,7 @@ async function loadAll(quiet){
     S.ready.jobs = S.ready.set = true; banner(""); render();
   } catch(e){
     if(e.code==="auth"){ signOut(); return; }
-    if(!quiet) banner(e.message && e.code!=="unavailable" ? e.message : "Can't reach the sheet – check your connection. Showing what's loaded.");
+    if(!quiet) banner(e.code!=="unavailable" && e.message ? e.message : "Can't reach the sheet – check your connection. Showing what's loaded." + (e.message ? " [" + e.message.replace(/^Couldn't reach the Google Sheet – check your signal\. /,"") + "]" : ""));
     S.ready.jobs = S.ready.set = true; render();
   }
 }
@@ -520,6 +520,182 @@ const TYPE_RULES = [
   ["Fans & heating", /\bFAN\b|EXHAUST|HEATER|VENT|DUCTING/i],
   ["Cable", /^CABLE|\bCBL\b|FLEX|CORD|WIRE|BOOST|TPS|CIRC|BUILDING WIRE|ARMOURED|SWA\b/i]
 ];
+/* Fallback nickname: the wholesaler description turned into plain English (abbreviations spelt out, sizes tidied, codes dropped). */
+const ABBR = {
+  "PLAS":"plastic","ADH":"adhesive","ELEC":"electrical","S/MTG":"surface mount","F/MTG":"flush mount","W/MTG":"wall mount","D/MTG":"DIN mount","S/F/MTD":"surface/flush mount",
+  "H/DTY":"heavy duty","M/DTY":"medium duty","L/DTY":"light duty","O/DTY":"ordinary duty","W/P":"weatherproof","C/W":"complete with","W/":"with","HDG":"galvanised","GALV":"galvanised",
+  "Z/PLT":"zinc plated","ZPLT":"zinc plated","Z/PLTD":"zinc plated","S/S":"stainless","S/S-316":"316 stainless","BRS":"brass","STL":"steel","MTL":"metal","ALU":"aluminium","ENCL":"enclosed","ENCLD":"enclosed",
+  "INSUL":"insulated","ASSY":"assembly","PK":"pack","BKT":"bucket","GRY":"grey","WHT":"white","WE":"white","BLK":"black","BK":"black","ORG":"orange","BLU":"blue","YLW":"yellow","GRN":"green","CLR":"clear",
+  "TRANS":"clear","THD":"threaded","STR":"straight","STRT":"straight","ANG":"angled","RND":"round","SQ":"square","RECT":"rectangular","HORZ":"horizontal","VERT":"vertical","ADJ":"adjustable","LGE":"large","SML":"small",
+  "STD":"standard","CTRL":"control","CONN":"connector","TERM":"terminal","TERML":"terminal","1PH":"single phase","3PH":"3 phase","ANT":"antenna","BRKT":"bracket","REFL":"reflective","UGND":"underground",
+  "LBL":"label","RES":"resistant","UV/RES":"UV resistant","HGNG":"hinged","DR":"door","OPQ":"opaque","CVR":"cover","ADPBL":"adaptable","FEM":"female","MTR":"metre","EXT":"external","INT":"internal",
+  "INCL":"including","APPROX":"approx","N/PLT":"nickel plated","CHR":"chrome","POLY":"poly","POLYE":"polyester","NYL":"nylon","SCR":"screw","SCRD":"screwed","SGL":"single","DBL":"double","QTY":"",
+  "G/B":"galvabond","HD":"heavy duty","I/DR":"indoor","O/DR":"outdoor","MNT":"mount","MTG":"mounting","SW":"switch","O/LET":"outlet","P/POINT":"powerpoint","J/BOX":"junction box","RLY":"relay",
+  "IND":"industrial","AUX":"auxiliary","ACC":"accessory","PBOARD":"panelboard","PNL":"panel","FLR":"floor","CEIL":"ceiling","LMP":"lamp","LT":"light","SENS":"sensor","DIMBL":"dimmable","NON-DIM":"non-dimmable",
+  "ECON":"economy","EMERG":"emergency","DIFFSD":"diffused","NBN":"NBN","PE":"PE","PVC":"PVC","LED":"LED","DIN":"DIN","IP":"IP","UHF":"UHF","VHF":"VHF","CAT6":"Cat6","RJ45":"RJ45","USB":"USB","GPO":"GPO","RCD":"RCD",
+  "OPQ/CVR":"opaque cover","W/SPG":"with spring","W/PLT":"with plate","GSKT":"gasket","HEX/HD":"hex head","P/SUPPLY":"power supply","DSK/DWN":"dusk to dawn","W/TMR":"with timer","LVL":"level",
+  "PNT":"point","PLN":"plain","EXTN":"extension","HGNG/DR":"hinged door","BLU/YLW":"blue/yellow","SPG":"spring","TMR":"timer","EXDE":"Ex de","IIC":"IIC","DEG":"°","90DEG":"90°","AA":"AA","AAA":"AAA"
+};
+function tidyDesc(desc){
+  let d = " " + String(desc||"").toUpperCase().replace(/\s+/g," ") + " ";
+  d = d.replace(/-BU\b|-SI\b/g," ").replace(/\(\d+\)/g," ").replace(/-?USE \d{6,}/g," ").replace(/\bPOA\b|\(POA\)/g," ");
+  // sizes: H108XW108XD76MM -> 108x108x76mm ; W75XL145MM -> 75x145mm
+  d = d.replace(/\b[HWLD]?(\d+(?:\.\d+)?)X[HWLD]?(\d+(?:\.\d+)?)(?:X[HWLD]?(\d+(?:\.\d+)?))?\s?MM\b/g, (_,a,b,c) => " " + a + "×" + b + (c ? "×" + c : "") + "mm ");
+  d = d.replace(/\bDIA\s?(\d+(?:\.\d+)?)\s?MM\b/g," $1mm dia ").replace(/\bW(\d+(?:\.\d+)?)MM\b/g," $1mm wide ").replace(/\bL(\d+(?:\.\d+)?)MM\b/g," $1mm long ")
+       .replace(/\bL(\d+(?:\.\d+)?)M\b/g," $1m long ").replace(/\bTHK(\d+(?:\.\d+)?)MM\b/g," $1mm thick ").replace(/\b(\d+(?:\.\d+)?)MM2\b/g," $1mm² ").replace(/\b(\d+(?:\.\d+)?)MM\b/g," $1mm ")
+       .replace(/\b(\d+)VAC\b/g," $1V AC ").replace(/\b(\d+)VDC\b/g," $1V DC ").replace(/\b(\d+)PK\b/g," $1 pack ").replace(/\b(\d+(?:\.\d+)?)M\b(?!M)/g," $1m ");
+  const words = d.trim().split(" ").filter(Boolean);
+  const out = [];
+  for(const w of words){
+    if(w in ABBR){ if(ABBR[w]) out.push(ABBR[w]); continue; }
+    if(/^[A-Z]{1,4}\d{3,}[A-Z0-9\-\/.]*$/.test(w) && !/^(IP|CAT|M|R|E|B|GU|MR|T)\d/.test(w)) continue;       // looks like a part number – drop
+    if(/^\d{5,}$/.test(w)) continue;
+    if(/^[A-Z]{1,2}\d+\/[A-Z]\d+$/.test(w)) continue;                                                          // packing codes like C6/P648
+    if(/^[A-Z]{2,}$/.test(w) && w.length > 2) { out.push(w.toLowerCase()); continue; }
+    out.push(/^[A-Z\/&-]+$/.test(w) ? w.toLowerCase() : w.replace(/MM\b/,"mm"));
+  }
+  let s = out.join(" ").replace(/\s+,/g,",").replace(/\s{2,}/g," ").trim();
+  const realWords = s.split(" ").filter(w => /[a-z]{3,}/i.test(w)).length;
+  if(realWords < 1) return "";                                         // description is only a code – nothing useful to say
+  s = s.split(" ").slice(0, 10).join(" ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+
+/* ---------- Automatic nicknames: plain-English names built from the wholesaler description + cat no ---------- */
+function autoNick(desc, cat){
+  const d = " " + String(desc||"").toUpperCase().replace(/\s+/g," ") + " ", c = String(cat||"").toUpperCase();
+  const has = re => re.test(d);
+  const num = (re, i=1) => { const m = d.match(re); return m ? m[i] : ""; };
+  const amps = num(/(\d+(?:\.\d+)?)\s?AX?\b/);
+  const gang = { "1":"Single", "2":"Double", "3":"Triple", "4":"Quad", "5":"5-gang", "6":"6-gang" }[num(/\b(\d)G\b/)] || "";
+  const colour = has(/\bWE\b|\bWHT\b|WHITE|V\/WHT|VIV\/WHT/) ? "white" : has(/\bBLK\b|BLACK|\bBK\b/) ? "black" : has(/\bGRY\b|GREY|CR\/GRY/) ? "grey" :
+                 has(/\bORG\b|ORANGE|E\/ORG/) ? "orange" : has(/\bRED\b/) ? "red" : has(/\bBLU\b|BLUE/) ? "blue" : has(/\bBRASS\b/) ? "brass" : has(/STAINLESS|\bS\/S\b/) ? "stainless" : "";
+  const series = /^CLI56(?!3|4)/.test(c) || has(/56 ?SER/) ? "56 Series" : has(/C2000|2000 SER/) ? "2000 series" : has(/ICONIC/) ? "Iconic" :
+                 has(/EXCEL/) ? "Excel" : has(/PUMA/) ? "Puma" : has(/SATURN/) ? "Saturn" : has(/\bSLIM\b/) ? "Slimline" : "";
+  const wp = has(/W\/P|WEATHERPROOF|\bIP5\d|\bIP6\d/) ? "weatherproof" : "";
+  const mm = num(/(\d+(?:\.\d+)?)\s?MM2?\b/);
+  let mm2 = num(/(?:^|[^\d.])(\d{1,3}(?:\.\d+)?|\.\d+)\s?MM(?:2|²)/); if(mm2.startsWith(".")) mm2 = "0" + mm2;
+  const len = num(/\bL(\d+)M\b/) || num(/\b(\d{2,4})M\b(?!M)/) || num(/\b(\d{2,4})MTR\b/);
+  const sz = mm2 || num(/(?:^|[^\d.])(\d{1,3}(?:\.\d+)?)\s?MM\b/).replace(/\.0+$/,"") || num(/FHDTH(\d+(?:\.\d)?)/).replace(/\.0$/,"");
+  const drum = len ? len + "m " + (Number(len) >= 200 ? "drum" : "roll") : "";
+  const join = (...a) => a.filter(Boolean).join(" ").replace(/\s+/g," ").trim();
+  const tail = (...a) => { const t = a.filter(Boolean).join(", "); return t ? ", " + t : ""; };
+
+  // 56 Series (Clipsal weatherproof range)
+  if(series==="56 Series"){
+    if(has(/SOCKET|O\/LET|OUTLET/)) return join("56 Series", has(/EXTN/)?"extension socket":"outlet", amps&&amps+"A", num(/(\d)PIN/)&&num(/(\d)PIN/)+"-pin", has(/\bRND\b|ROUND/)?"round":has(/FLAT|FLT/)?"flat":"") + tail(has(/\bSW|SWD/)&&"switched", has(/RCD|W\/RCD/)&&"with RCD", colour);
+    if(has(/^ SWITCH|SWITCH IND|ISOL/)) return join("56 Series isolator", amps&&amps+"A", num(/(\d)P\b/)&&num(/(\d)P\b/)+"-pole") + tail(colour);
+    if(has(/PLUG/)) return join("56 Series plug", amps&&amps+"A", num(/(\d)PIN/)&&num(/(\d)PIN/)+"-pin", has(/RND/)?"round":has(/FLAT/)?"flat":"", has(/ANG/)?"angled":"");
+    if(has(/ENCLOSURE|BACK BOX|LID|COVER/)) return join("56 Series", has(/LID/)?"lid":has(/BACK BOX/)?"back box":has(/COVER/)?"cover kit":"enclosure", gang&&gang.toLowerCase()+"-gang".replace("single-gang","1-gang"));
+    return join("56 Series", (desc||"").toLowerCase().split(" ").slice(0,3).join(" "));
+  }
+  // Power points
+  if(has(/POWERPOINT|POWER POINT|\bGPO\b|\bDGPO\b/))
+    return join(gang||"", "GPO", amps&&amps+"A") + tail(has(/USB/)&&"USB", wp, has(/EXTRA SW|W\/ EXTRA|REMBL|X\/SW/)&&"extra switch", series&&series+" series".replace(/ series series/,"").replace("2000 series series","2000 series"), colour).replace(" series series"," series");
+  if(has(/SOCKET O\/LET|SOCKET OUTLET|SURFACE SOCKET/)) return join(gang||"", "socket outlet", amps&&amps+"A", num(/(\d)\s?PIN/)&&num(/(\d)\s?PIN/)+"-pin") + tail(has(/S\/MTG/)&&"surface", wp, colour);
+  // Switches
+  if(has(/GRID & COVER|GRID AND COVER/)) return join(gang&&gang.replace("Single","1").replace("Double","2").replace("Triple","3").replace("Quad","4")+"-gang".replace(/^\d-gang$/,m=>m), "grid & cover") .replace(/^(\d)-gang/,"$1-gang") + tail(has(/BLNK|BLANK/)&&"blank", has(/LGE\/PLT|LARGE/)&&"large plate", series, colour);
+  if(has(/MECHANISM|\bMECH\b/)) return join("switch mech", amps&&amps+"A") + tail(has(/INTER/)&&"intermediate", has(/2W|2WAY|1\/2WAY/)&&"2-way", has(/BELL|PUSH/)&&"bell press", series, colour);
+  if(has(/ISOL/) && has(/SWITCH|SW\b/)) return join("Isolator", amps&&amps+"A", num(/\b(\d)P\b/)&&num(/\b(\d)P\b/)+"-pole") + tail(wp, colour);
+  if(has(/^ SWITCH \d?G?|^ SWITCH /) && !has(/CHANGEOVER|FLOAT|LIMIT|PRESSURE|ROTARY/)) return join(gang&&gang+"-gang".replace(/(Single|Double|Triple|Quad)-gang/,"$1"), "light switch", amps&&amps+"A").replace(/^(Single|Double|Triple|Quad) light/,"$1 light") + tail(has(/2W|1\/2WAY|2 WAY/)&&"2-way", has(/COOKER/)&&"cooker", wp, series, colour);
+  if(has(/MOUNTING BLOCK|MTG BLOCK/)) return join("Mounting block", gang&&gang.toLowerCase()) + tail(has(/S\/MTG|SURFACE/)&&"surface", colour);
+  if(has(/DIMMER/)) return join("Dimmer", num(/(\d+)W\b/)&&num(/(\d+)W\b/)+"W") + tail(series, colour);
+  // Protection
+  if(has(/\bRCBO\b/)) return join("RCBO", amps&&amps+"A", num(/(\d+)\s?MA\b/)&&num(/(\d+)\s?MA\b/)+"mA", has(/\b4P\b/)?"4-pole":has(/\b2P\b|1P\+N/)?"":"" , num(/\b([BCD])[- ]?CU?RVE|\b([BCD])-CVE/,1)&&(num(/\b([BCD])[- ]?CU?RVE|\b([BCD])-CVE/,1)+"-curve")) + tail(has(/TYPE[- ]?A\b|A-TYPE/)&&"Type A", has(/SLIM/)&&"slim", has(/PIGTAIL/)&&"pigtail");
+  if(has(/\bMCB\b|CIRCUIT BREAKER/)) return join("MCB", amps&&amps+"A", num(/\b(\d)P\b/)&&num(/\b(\d)P\b/)+"-pole", num(/\b([BCD])-CVE|([BCD]) CURVE/)&&num(/\b([BCD])-CVE|([BCD]) CURVE/)+"-curve", num(/(\d+(?:\.\d)?)KA/)&&num(/(\d+(?:\.\d)?)KA/)+"kA");
+  if(has(/\bRCD\b/)) return join("RCD", amps&&amps+"A", num(/(\d+)\s?MA/)&&num(/(\d+)\s?MA/)+"mA", num(/\b(\d)P\b/)&&num(/\b(\d)P\b/)+"-pole");
+  if(has(/SURGE|\bSPD\b/)) return join("Surge protector", amps&&amps+"A");
+  if(has(/CONTACTOR/)) return join("Contactor", amps&&amps+"A");
+  if(has(/SWITCHBOARD|ENCLOSURE.*MOD|LOAD ?CENTRE|DISTRIBUTION ?BOARD/)) return join("Switchboard enclosure", num(/(\d+)\s?MOD/)&&num(/(\d+)\s?MOD/)+"-module") + tail(wp, has(/S\/MTG/)&&"surface", has(/F\/MTG|FLUSH/)&&"flush");
+  if(has(/METERBOX|METER BOX/)) return join("Meter box", has(/POLEFILL/)?"pole fillers":"");
+  if(has(/PLUGTOP|PLUG TOP/)) return join("Plug top", amps&&amps+"A") + tail(has(/3-?FLT|3 PIN|3-FLT\/PIN/)&&"3-pin", colour);
+  if(has(/^ PLUG /) && has(/\dPIN|PIN/)) return join("Plug", amps&&amps+"A", num(/(\d)\s?PIN/)&&num(/(\d)\s?PIN/)+"-pin") + tail(wp, colour);
+  // Cable – named the way sparkies say it
+  if(has(/CORD END SLEEVE|BOOTLACE|B\/LACE/)) return join("Bootlace ferrules", mm2&&mm2+"mm");
+  if(has(/CABLE CIRC/)){ const cores = num(/(\dC\+E|\dC)\b/); return join(mm2&&mm2+"mm", cores, "orange circ") + tail(has(/XLP/)&&"XLPE", drum); }
+  if(has(/CABLE FLAT|FLAT TPS/)){ const cores = num(/(\dC\+E|\dC)\b/); return join(mm2&&mm2+"mm", cores, "flat TPS") + tail(cores==="2C+E"&&"twin & earth", drum); }
+  if(has(/\dC\+E/) && sz && has(/XLP/)) return join(sz+"mm", num(/(\dC\+E)/), "XLPE circular") + tail(has(/ORG/)&&"orange", drum);
+  if(has(/E\/WIRE|EARTH WIRE|TREOFLEX EARTH|FLEXIBLE EARTH|V90 EARTH/) || (has(/GRN\/YLW|G\/YLW|G\/Y\b|GREEN\/YELLOW|GRENN\/YELLOW/) && has(/\b1C\b|CABLE|FLEX/) && mm2))
+    return join(sz&&sz+"mm", "earth wire") + tail(has(/FLEX/)&&"flexible", drum);
+  if(has(/CABLE SDI|\bSDI\b/)) return join(mm2&&mm2+"mm", "SDI single core") + tail(has(/RED\/WHT|R\/W\b/)&&"red/white", has(/B&W|BLK\/WHT/)&&"black/white", has(/XLPE/)&&"XLPE", has(/ALU|\bAL\b/)&&"aluminium", drum);
+  if(has(/CABLE INSTR|INSTRUMENT CABLE|\d+PR .*SCRND|SCRND/)){ const pr = num(/(\d+)\s?PR/); const core = num(/(\d+)C\b/); return join("Instrument cable", pr ? pr+" pair" : core ? core+"-core" : "", mm2&&mm2+"mm") + tail("screened", drum); }
+  if(has(/MBW|BOOST/)) return join(num(/(\d\.?\d?)\+E/)&&num(/(\d\.?\d?)\+E/)+"mm", "2C+E Olex Boost") + tail(drum);
+  if(has(/CAT ?6A?\b|CAT ?5E?\b/) && has(/CABLE|CBL/)) return join(has(/CAT ?6A/)?"Cat6A":has(/CAT ?6/)?"Cat6":"Cat5e", "data cable") + tail(drum || (num(/(\d+)M\b/)&&num(/(\d+)M\b/)+"m box"));
+  if(has(/BRAIDED|BARAIDED|\bBRD\b|AFLEX/)) return join(mm&&mm+"mm", num(/(\dC(?:&E|\+E)?)/).replace("&","+"), "braided flex") + tail("Aflex");
+  if(has(/ARMOURED|\bSWA\b/)) return join("Steel armoured cable", num(/(\d+G\d+(?:\.\d)?)/));
+  if(has(/H07 ?RN-?F\s*\d\s*G\s*\d/)) return join(num(/G\s*(\d+(?:\.\d)?)/)+"mm", num(/RN-?F\s*(\d)/)+"-core", "rubber flex") + tail("H07RN-F heavy duty");
+  if(has(/FODT/) && has(/SINGLE/)) return join("Building wire") + tail("flexible", colour);
+  if(has(/H07 ?RN|H07BNF|RUB\b|RUBBER|EPR/) && (mm2 || has(/\dG\d/))) { const cores = num(/(\dC\+E)/) || (num(/(\d)\s?G\s?(\d+)/) ? num(/(\d)\s?G/)+"-core" : ""); const sz = mm2 || num(/\dG(\d+(?:\.\d)?)/) || num(/\d G (\d+)/); return join(sz&&sz+"mm", cores, "rubber flex") + tail("heavy duty"); }
+  if(has(/OLFLEX|OZOFLEX|PROTOMONT|TPE/) || has(/\b\dG\d/)) { const g = num(/(\d+G\d+(?:\.\d)?(?:MM2)?)/); return join(has(/OLFLEX/)?"Olflex":has(/OZOFLEX/)?"Ozoflex":"Control flex", g.replace("MM2","mm")) + tail(has(/SCRN|SCREEN|CY\b/)&&"screened"); }
+  if(has(/CABLE CTRL|CONTROL CABLE/) && sz) return join(sz+"mm", num(/(\d+C\+E|\d+C)\b/), "control cable");
+  if(has(/\bEMC\b/) && sz) return join(sz+"mm", num(/(\dC\+E)/), "EMC cable");
+  if(has(/CABLE AUTO/)) return join(sz&&sz+"mm", "auto cable") + tail(colour);
+  if(has(/(\d)C\b/) && num(/(\d)C\b/)!=="1" && mm2 && has(/FLEX|FLX/)) return join(mm2+"mm", num(/(\d)C\b/)+"-core flex") + tail(has(/O\/DTY|ORDINARY/)&&"ordinary duty", colour, drum);
+  if(has(/RUBBER FLEX|\bRUB\b/) && sz) return join(sz+"mm", num(/(\dC\+E|\dC&E)/).replace("&","+"), "rubber flex") + tail("heavy duty");
+  if((has(/BUILDING WIRE|BLDG WIRE|B\/WIRE|\bFODT\b|FHDTH|SINGLE CORE|\b1C\b|\bSC\b|V90|X1C|0\.6\/1KV|06\/1KV|FLEXIABLE/) || has(/^ \.?\d[\d.]*MM2 FLEX/)) && sz)
+    return join(sz+"mm building wire") + tail(has(/FLEX|FLX/)&&"flexible", has(/LSZH|X-HF/)&&"low smoke", has(/TINNED/)&&"tinned", colour, drum);
+  // Conduit & fittings
+  if(has(/REDUCER/) && has(/CONDUIT|RGD|DIA/)) return join("Conduit reducer", num(/(\d+-\d+)\s?MM/)&&num(/(\d+-\d+)\s?MM/)+"mm") + tail(has(/ORG/)&&"orange", colour!=="orange"&&colour);
+  if(has(/JUNCTION BOX GIANT|GIANT/) && has(/JUNCTION/)) return join("Giant junction box") + tail(colour);
+  if(has(/J\/BOX|JUNCTION BOX/)) { const jm = num(/RND (\d+)MM/) || num(/(\d+)MM-?RGD/); return join(jm&&jm+"mm", "junction box", num(/(\d)\s?WAY/)&&num(/(\d)\s?WAY/)+"-way") + tail(colour); }
+  if(has(/MOUNTING BOX/)) return join("Mounting box", gang&&gang.toLowerCase()) + tail(has(/S\/MTG/)&&"surface", mm&&mm+"mm entry", colour);
+  if(has(/SADDLE/)) return join(mm&&mm+"mm", "saddle") + tail(has(/DOUBLE|DBL/)&&"double", has(/SPACER/)&&"spacer", colour);
+  if(has(/CONDUIT/) && has(/BEND|SWEEP|ELBOW/)) return join(mm&&mm+"mm", "conduit bend") + tail(has(/90/)&&"90°", has(/U\/GD|ORG/)&&"underground", colour);
+  if(has(/CONDUIT/) && has(/COUPLING/)) return join(mm&&mm+"mm", "conduit coupling") + tail(colour);
+  if(has(/CONDUIT/) && has(/ADAPTER|ADAPTOR/)) return join(mm&&mm+"mm", "conduit adaptor");
+  if(has(/LOCKRING/)) return join(mm&&mm+"mm", "lockring");
+  if(has(/CONDUIT/) && has(/BUSH/)) return join(mm&&mm+"mm", "conduit bush", has(/FEM/)?"female":has(/MALE/)?"male":"");
+  if(has(/CONDUIT/) && has(/CORGTD|CORRUG|\bCORR\b|FLEX/)) return join(mm&&mm+"mm", "corrugated conduit") + tail(len&&len+"m", colour);
+  if(has(/CONDUIT/) && has(/RGD|RIGID|PVC|\bDIA\d/)) return join(mm&&mm+"mm", "rigid conduit") + tail(has(/H\/DTY|HD/)&&"heavy duty", has(/ORG|ORANGE/)&&"orange (underground)", has(/NBN|TELSTRA/)&&"NBN white", len&&len+"m");
+  if(has(/GLAND/)) return join(mm&&mm+"mm", "cable gland") + tail(has(/NYL|NYLON/)&&"nylon", has(/BRASS/)&&"brass", colour);
+  // Connectors, lugs
+  if(has(/\bLUG\b|LUGS/)) return join(mm2&&mm2+"mm", "lug") + tail(has(/BELL/)&&"bell mouth", num(/M(\d+)/)&&"M"+num(/M(\d+)/)+" stud");
+  if(has(/CONNECTOR TERMINAL|SINGLE CONNECTOR/)) return join("Connector", amps&&amps+"A") + tail(num(/(\d+)PK/)&&num(/(\d+)PK/)+" pack");
+  if(has(/HEATSHRINK/)) return join("Heatshrink", mm&&mm+"mm") + tail(colour);
+  if(has(/CABLE TIE/)) { const tl = num(/L(\d+)MM/) || num(/(\d{3})X\d/); return join("Cable ties", tl&&tl+"mm") + tail(has(/HOOK&LOOP|VELCRO/)&&"velcro", colour); }
+  if(has(/CABLE CLIP/)) return join("Cable clips") + tail(has(/2C\+E (\d)/)&&"", num(/FOR CABLE ([\w+.]+ [\d.]+MM2)/)&&"for "+num(/FOR CABLE ([\w+.]+ [\d.]+MM2)/).toLowerCase());
+  // Lighting
+  if(has(/DOWNLIGHT/)) return join("LED downlight", num(/(\d+(?:\/\d+)?)W\b/)&&num(/(\d+(?:\/\d+)?)W\b/)+"W") + tail(has(/DIMBL|DIM\b/)&&"dimmable", has(/TRI|3\/4\/6K|COLOUR SEL|CCT|TC/)&&"tri-colour", colour);
+  if(has(/BATTEN/)) return join("LED batten", num(/(\d+)W\b/)&&num(/(\d+)W\b/)+"W");
+  if(has(/FLOODLIGHT|FLOOD LIGHT/)) return join("LED floodlight", num(/(\d+(?:X\d+)?)W\b/)&&num(/(\d+(?:X\d+)?)W\b/)+"W") + tail(has(/SENS/)&&"with sensor", colour);
+  if(has(/HIGHBAY|HIGH BAY/)) return join("LED highbay", num(/(\d+)W\b/)&&num(/(\d+)W\b/)+"W");
+  if(has(/OYSTER/)) return join("LED oyster light", num(/(\d+)W\b/)&&num(/(\d+)W\b/)+"W");
+  if(has(/BULKHEAD/)) return join("Bulkhead light", num(/(\d+)W\b/)&&num(/(\d+)W\b/)+"W");
+  if(has(/LAMP FLUOR|FLUORO TUBE/)) return join("Fluoro tube", num(/(\d+)W\b/)&&num(/(\d+)W\b/)+"W", num(/\b(T5|T8)\b/));
+  if(has(/STARTER FLUOR/)) return "Fluoro starter";
+  if(has(/PANEL/) && has(/LED|LIGHT|ECO/) && has(/1200X300|600X600|300X1200/)) return join("LED panel", num(/(1200X300|600X600|300X1200)/).toLowerCase());
+  if(has(/LAMP|GLOBE/)) return join(has(/LED/)?"LED":"", has(/TUB/)?"tube":"globe", num(/(\d+(?:\.\d)?)W\b/)&&num(/(\d+(?:\.\d)?)W\b/)+"W", num(/\b(E27|E14|B22|B15|GU10|MR16|G23|G24\w*|T8)\b/)) + tail(has(/DIMBL|\bDIM\b/)&&"dimmable");
+  if(has(/EXIT|EMERG|PATHFINDER/)) return join(has(/EXIT/)?"Exit sign":"Emergency light") + tail(num(/(\d+)W\b/)&&num(/(\d+)W\b/)+"W");
+  // Safety, data, misc
+  if(has(/SMOKE ALARM/)) return join("Smoke alarm") + tail(has(/240V/)&&"240V", has(/L-?ION|LITHIUM|LI-ION/)?"lithium backup":has(/9V/)?"9V backup":"", has(/HUSH/)&&"hush button");
+  if(has(/RJ45/)) return join("RJ45", has(/JACK|SOCKET/)?"data jack":"data plug", has(/CAT6A/)?"Cat6A":has(/CAT6/)?"Cat6":"");
+  if(has(/PATCH ?LEAD/)) return join("Cat6 patch lead") + tail(num(/L(\d+(?:\.\d)?)M/)&&num(/L(\d+(?:\.\d)?)M/)+"m");
+  if(has(/\bFAN\b/) && has(/CEILING/)) return join("Ceiling fan") + tail(has(/LIGHT/)&&"with light", has(/REMOTE/)&&"remote");
+  if(has(/EXHAUST/)) return join("Exhaust fan") + tail(mm&&mm+"mm");
+  if(has(/LINK NEUT|NEUTRAL LINK|NEUT.*LINK|EARTH LINK/)) return join(has(/EARTH/)?"Earth link":"Neutral link", amps&&amps+"A");
+  if(has(/CHANNEL/) && has(/H41|UNISTRUT|STRUT/)) return join("Unistrut channel") + tail(len&&len+"m", has(/S\/S/)&&"stainless", has(/HDG|GALV/)&&"galvanised");
+  if(has(/LADDER/)) return join("Cable ladder") + tail(num(/W(\d+)/)&&num(/W(\d+)/)+"mm wide");
+  if(has(/CABLE COVER/)) return join("Cable cover", num(/W(\d+)/)&&num(/W(\d+)/)+"mm") + tail(has(/HDG|GALV/)&&"galvanised");
+  if(has(/CABLE DUCT|\bDUCT\b|TRUNKING/)) return join("Cable duct", num(/W(\d+)/)&&num(/W(\d+)/)+"mm") + tail(colour);
+  if(has(/DIN RAIL/) && !has(/POWER SUPPLY|\d+V/)) return "DIN rail";
+  if(has(/EARTH ROD|EARTH STAKE/)) return join("Earth stake", num(/L(\d\.?\d?)M/)&&num(/L(\d\.?\d?)M/)+"m");
+  if(has(/FUSE HOLDER/)) return join(has(/SERVICE/)?"Service fuse holder":"Fuse holder", amps&&amps+"A");
+  if(has(/TERMINAL BLOCK|TERM BLOCK/)) return join("Terminal block", mm2&&mm2+"mm") + tail(has(/EARTH/)&&"earth", has(/END PLATE/)&&"end plate");
+  if(has(/WARNING/) && has(/TAPE/)) return "Underground warning tape";
+  if(has(/SILICONE/)) return "Silicone";
+  if(has(/MOTION SENSOR|\bPIR\b/)) return join("PIR motion sensor") + tail(has(/I\/DR|INDOOR/)&&"indoor", has(/O\/DR|OUTDOOR|IP\d\d/)&&"outdoor", colour);
+  if(has(/PHOTO ?ELECTRIC|PE CELL|\bCELL PE\b/)) return "PE cell (day/night)";
+  if(has(/BUSBAR/)) return join("Busbar", amps&&amps+"A", num(/(\d+)\s?MOD/)&&num(/(\d+)\s?MOD/)+"-module");
+  if(has(/TEST TAG/)) return join("Test tags") + tail(colour);
+  if(has(/ANTENNA/)) return join("TV antenna", has(/BRACKET|MOUNT/)?"bracket":"");
+  if(has(/TIMER/)) return "Timer";
+  if(has(/THERMOSTAT/)) return "Thermostat";
+  if(has(/SPIRALWRAP/)) return join("Spiral wrap", mm&&mm+"mm");
+  return tidyDesc(desc);      // anything else: the description in plain English
+}
+
+
 /* ---------- CATALOGUE: suppliers → product types → products ---------- */
 const TYPE_NAMES = ["Cable","Conduit & fittings","Cable support & tray","Connectors & terminations","Switchboards & protection","Power points & switches","Lighting","Data, TV & comms","Smoke alarms & safety","Earthing","Fans & heating","Solar & batteries","Fixings & consumables","Tools & testers","Poles, pits & street lighting","Motors & industrial","Other"];
 function autoType(d){ d = String(d||"").toUpperCase(); for(const [n,rx] of TYPE_RULES) if(rx.test(d)) return n; return "Other"; }
@@ -532,10 +708,32 @@ function typesOf(sup){
   S.items.forEach(i => { if(sup && i.s!==sup) return; const g = i.g||"Other"; m.set(g, (m.get(g)||0)+1); });
   return [...m.entries()].sort((a,b)=>TYPE_NAMES.indexOf(a[0])-TYPE_NAMES.indexOf(b[0]));
 }
+/* Everyday words → how wholesalers write them, so "double gpo" finds "POWERPOINT 2G…". Add more here any time. */
+const SYNONYMS = {
+  gpo:["powerpoint","power point","socket"], gpos:["powerpoint"], powerpoint:["gpo"], outlet:["powerpoint","socket","o/let"],
+  single:["1g"," 1p "], double:["2g"], twin:["2g","2c+e","2c "], triple:["3g"], quad:["4g"],
+  tps:["cable circ","cable flat","2c+e","3c+e","4c+e"], breaker:["mcb","circuit breaker","rcbo"], cb:["mcb","circuit breaker"],
+  rcd:["rcbo","rcd"], safety:["rcbo","rcd"], smoke:["smoke alarm"], alarm:["smoke alarm","alarm"],
+  jbox:["j/box","junction box","junction"], junction:["j/box","junction"], isolator:["isol","isolat"], iso:["isol","isolat"],
+  data:["cat6","cat5","rj45","data"], ethernet:["cat6","rj45"], tv:["coax","f-type","antenna","tv"], earth:["e/wire","earth"],
+  light:["light","lamp","led","batten","downlight"], globe:["lamp","globe"], tube:["lamp led tubular","tube"],
+  series:["series","ser"], box:["box","enclosure","encl"], enclosure:["enclosure","box"], tape:["tape"], screw:["screw","scr"], nut:["nut"], bolt:["bolt"], circ:["cable circ","circ"], building:["building wire","bldg","b/wire"," 1c "], bw:["building wire"], sdi:["sdi"], conduit:["conduit"], saddle:["saddle"], gland:["gland"], tie:["cable tie","tie"], ties:["cable tie"], lugs:["lug"], lug:["lug"],
+  switch:["switch","sw "], dimmer:["dimmer"], fan:["fan"], usb:["usb"], flex:["flex"],
+  weatherproof:["w/p","weatherproof","ip5","ip6"], waterproof:["w/p","ip6","ip5"], outdoor:["w/p","ip5","ip6"], wp:["w/p"],
+  black:["blk","black"], white:["wht","white"," we "], grey:["gry","grey"], red:["red"], orange:["org","orange"]
+};
+function termMatches(t, hay){
+  if(hay.includes(t)) return true;
+  const alts = SYNONYMS[t]; return !!(alts && alts.some(a => hay.includes(a)));
+}
+const PHRASES = [[/safety switch(es)?/g,"rcd"],[/power ?points?/g,"gpo"],[/junction box(es)?/g,"jbox"],[/circuit breakers?/g,"breaker"],
+  [/smoke (alarm|detector)s?/g,"smoke"],[/twin (and|&) earth|t ?& ?e\b/g,"tps"],[/light switch(es)?/g,"switch"],[/down ?lights?/g,"downlight"]];
 function filterItems(f, qs, n=80){
-  const terms = String(qs||"").toLowerCase().split(/\s+/).filter(Boolean);
+  let q = String(qs||"").toLowerCase(); PHRASES.forEach(([re,to]) => { q = q.replace(re, to); });
+  const STOP = {the:1, a:1, an:1, for:1, with:1, of:1, and:1};
+  const terms = q.split(/\s+/).filter(t => t && !STOP[t]);
   const out = S.items.filter(it => (!f.s || it.s===f.s) && (terms.length || !f.g || (it.g||"Other")===f.g) &&  // typing searches every type
-    (!terms.length || terms.every(t => ((it.c||"")+" "+(it.d||"")+" "+(it.b||"")).toLowerCase().includes(t))));
+    (!terms.length || (h => terms.every(t => termMatches(t, h)))(" " + ((it.k||"")+" "+(it.c||"")+" "+(it.d||"")+" "+(it.b||"")).toLowerCase() + " ")));
   out.sort((a,b) => (Number(b.n)||0)-(Number(a.n)||0) || String(a.d).localeCompare(String(b.d)));
   return {list: out.slice(0,n), total: out.length};
 }
@@ -552,7 +750,7 @@ function bindFilterBar(box, f, redraw){
   box.querySelectorAll("[data-fg]").forEach(b => b.onclick = () => { f.g = b.dataset.fg; redraw(); });
 }
 function itemRowHTML(it, i){
-  return `<div class="list-item" data-k="${i}"><div class="grow"><div>${esc(it.d)}</div>
+  return `<div class="list-item" data-k="${i}"><div class="grow">${it.k?`<div><b>${esc(it.k)}</b></div>`:""}<div${it.k?' class="mute" style="font-size:13px"':""}>${esc(it.d)}</div>
     <div class="mute"><b>${esc(it.c)}</b>${it.b?` · ${esc(it.b)}`:""}${it.s?` · ${esc(it.s)}`:""}${Number(it.n)>1?` · ordered ${it.n}×`:""}</div></div>
     ${showPrices() && it.p ? `<div class="num">${money(it.p)}</div>` : ""}</div>`;
 }
@@ -561,7 +759,7 @@ function pickMaterial(job){
   const f = S.pickF || (S.pickF = {s: suppliersOf().includes(S.settings.supplier) ? S.settings.supplier : "", g: ""});
   openModal(`<h3>Add material – #${esc(job.jobNo)}</h3>
     <div id="pBar"></div>
-    <input id="pQ" type="search" placeholder="Search description or cat no…" autocomplete="off" value="${esc(S.pickQ||"")}">
+    <input id="pQ" type="search" placeholder="Search – e.g. double gpo, 20a rcbo, 2.5 tps…" autocomplete="off" value="${esc(S.pickQ||"")}">
     <div id="pRes" style="margin-top:8px"></div>
     <div class="actions" style="justify-content:space-between"><button id="pCustom">Not in the list</button><button id="mCancel">Done</button></div>`);
   const draw = () => {
@@ -613,18 +811,31 @@ function fromParts(mat, job){ // work out the picker state from a saved material
   return {from:"supplier", rego:vanRego(job, mat.date||today()), sup:s};
 }
 
+async function confirmQty(q){
+  return new Promise(res => {
+    openModal(`<h3>Only ${q} m?</h3><p>Cable is entered in <b>metres</b>. If you meant part of a drum (e.g. 0.2 of a 100m roll), enter the metres instead – that would be 20.</p>
+      <div class="actions"><button id="cqNo">Change it</button><button class="pri" id="cqYes">Yes, ${q} m is right</button></div>`);
+    $("#cqNo").onclick = () => res(false); $("#cqYes").onclick = () => res(true);
+  });
+}
+/* Cable is always recorded in metres, not drums. */
+const isCable = it => !!it && ((it.g||"")==="Cable" || /^(CABLE|FLEX|BUILDING WIRE|H07|OLFLEX|FODT|MBW)|\bTPS\b|E\/WIRE|\d+\.?\d*MM2 FLEX/i.test(it.d||""));
+function drumText(d){ const m = String(d||"").toUpperCase().match(/\bL(\d+)M\b|\b(\d{2,4})M\b(?!M)|\b(\d{2,4})MTR\b/); const n = m && (m[1]||m[2]||m[3]); return n ? `${n}m ${Number(n)>=200?"drum":"roll"}` : ""; }
 function qtyPrompt(job, it){
   const custom = !it;
   const defS = (it && it.s) || (S.pickF && S.pickF.s) || S.settings.supplier || "";
-  const m = it ? {c:it.c, d:it.d, b:it.b||"", u:it.u||"", p:Number(it.p)||0, qty:1} : {c:"", d:"", b:"", u:"", p:0, qty:1};
+  const cable = isCable(it);
+  const m = it ? {c:it.c, d:it.d, b:it.b||"", u:cable ? "m" : (it.u||""), p:Number(it.p)||0, qty:1} : {c:"", d:"", b:"", u:"", p:0, qty:1};
   m.date = S.lastMatDate || today();
   m.from = S.lastFrom || "supplier"; m.rego = vanRego(job, m.date); m.sup = defS;
   const priceField = showPrices() ? `<div><label>Unit price (ex GST)</label><input id="qP" type="number" inputmode="decimal" step="0.01" value="${m.p||""}"></div>` : "";
   openModal(`<h3>${custom?"Add a product":esc(m.d)}</h3>${custom?"":`<div class="mute">Cat no <b>${esc(m.c)}</b>${defS?` · listed under ${esc(defS)}`:""}</div>`}
     ${custom?`<label>Description</label><input id="qD" placeholder="e.g. Double GPO 10A white">
       <div class="grid2"><div><label>Cat no</label><input id="qC" style="text-transform:uppercase"></div><div><label>Product type</label>${typeSelect("qG", (S.pickF&&S.pickF.g)||"")}</div></div>`:""}
-    <div class="grid2"><div><label>Quantity</label><input id="qQ" type="number" inputmode="decimal" step="any" value="1"></div>
+    <div class="grid2"><div><label>${cable?"Metres used":"Quantity"}</label><input id="qQ" type="number" inputmode="decimal" step="any" value="${cable?"":"1"}" placeholder="${cable?"e.g. 20":""}"></div>
     <div><label>Date</label><input id="qDt" type="date" value="${esc(m.date)}"></div>${priceField}</div>
+    ${cable?`<div class="mute" style="margin-top:4px">Cable is counted in <b>metres</b>${drumText(m.d)?` – enter the metres used off the ${drumText(m.d)}, not part of a drum`:""}.</div>`:""}
+    ${custom?`<label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin-top:8px"><input type="checkbox" id="qM" style="width:auto"> Quantity is in metres (cable)</label>`:""}
     ${fromHTML(m)}
     ${custom?`<label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400"><input type="checkbox" id="qSave" style="width:auto" checked> Save to the product list for next time</label>`:""}
     <div class="actions"><button id="qBack">Back</button><button class="pri" id="qAdd">Add to job</button></div>`);
@@ -635,8 +846,10 @@ function qtyPrompt(job, it){
     let g = "";
     if(custom){ m.d=$("#qD").value.trim(); m.c=$("#qC").value.trim().toUpperCase(); g=$("#qG").value; if(!m.d){ toast("Enter a description."); return; } }
     m.qty = Number($("#qQ").value)||0; m.date = $("#qDt").value || today(); S.lastMatDate = m.date;
+    if(custom && (($("#qM") && $("#qM").checked) || g==="Cable")) m.u = "m";
+    if(m.u==="m" && m.qty>0 && m.qty<1 && !(await confirmQty(m.qty))) { pickMaterial(job); return; }
     if($("#qP")) m.p = Number($("#qP").value)||0;
-    if(m.qty<=0){ toast("Enter a quantity."); return; }
+    if(m.qty<=0){ toast(m.u==="m" ? "Enter the metres used." : "Enter a quantity."); return; }
     readFrom(m);
     const mat = {c:m.c, d:m.d, b:m.b, u:m.u, p:m.p, qty:m.qty, date:m.date, s:m.s, from:m.from};
     const x = clone(job); x.materials = x.materials||[];
@@ -648,7 +861,7 @@ function qtyPrompt(job, it){
       if(custom && $("#qSave") && $("#qSave").checked){
         if(!mat.c) mat.c = "X-"+uid().slice(-6).toUpperCase();
         const listSup = m.from==="supplier" ? m.s : (S.settings.supplier || "Other");
-        await upsertItem({s:listSup, g, c:mat.c, d:mat.d, b:"", u:"", n:1, l:mat.date, p:mat.p||0});
+        await upsertItem({s:listSup, g, c:mat.c, d:mat.d, k:autoNick(mat.d, mat.c), b:"", u:"", n:1, l:mat.date, p:mat.p||0});
       }
       toast(`Added ${mat.qty} × ${mat.d} (${mat.s||"no supplier"})`); pickMaterial(S.jobs.find(y=>y.id===job.id) || x);
     } catch(e){ $("#qAdd").disabled=false; writeErr(e); }
@@ -659,7 +872,7 @@ function editMaterial(job, i){
   const m = Object.assign({}, fromParts(mat, job));
   openModal(`<h3>Edit material</h3>
     <label>Description</label><input id="eD" value="${esc(mat.d)}">
-    <div class="grid${showPrices()?3:2}"><div><label>Qty</label><input id="eQ" type="number" inputmode="decimal" step="any" value="${esc(mat.qty)}"></div>
+    <div class="grid${showPrices()?3:2}"><div><label>${mat.u==="m"?"Metres":"Qty"}</label><input id="eQ" type="number" inputmode="decimal" step="any" value="${esc(mat.qty)}"></div>
     <div><label>Date</label><input id="eDt" type="date" value="${esc(mat.date||"")}"></div>
     ${showPrices()?`<div><label>Price ea</label><input id="eP" type="number" inputmode="decimal" step="0.01" value="${esc(mat.p||"")}"></div>`:""}</div>
     <label>Cat no</label><input id="eC" value="${esc(mat.c||"")}">
@@ -1133,9 +1346,12 @@ function jobCardPDF(j){
   };
   const cell = (txt, xs, cols, i, y, rowH, align) => {
     if(txt==null || txt==="") return;
-    const w = cols[i][1] - 3; const t = fitText(doc, String(txt), w);
+    const w = cols[i][1] - 3, fs0 = doc.getFontSize(); let fs = fs0;
+    while(doc.getTextWidth(String(txt)) > w && fs > 6.5){ fs -= 0.5; doc.setFontSize(fs); }   // shrink long cat nos to fit
+    const t = fitText(doc, String(txt), w);
     if(align==="c") doc.text(t, xs[i] + cols[i][1]/2, y + rowH - 2.1, {align:"center"});
     else doc.text(t, xs[i] + 1.5, y + rowH - 2.1);
+    doc.setFontSize(fs0);
   };
 
   /* ---- labour lines (long descriptions wrap onto extra rows) ---- */
@@ -1230,12 +1446,20 @@ function viewInventory(){
   $("#title").textContent = "Products";
   if(S.isAdmin){ $("#topAct").innerHTML = `<button class="pri" id="impBtn">Import</button>`; $("#impBtn").onclick = importDialog; }
   const f = S.invF || (S.invF = {s:"", g:""});
-  $("#main").innerHTML = `<div id="invBar"></div>
+  const blank = S.isAdmin ? S.items.filter(it => !it.k && autoNick(it.d, it.c)).length : 0;
+  $("#main").innerHTML = `${blank?`<div class="card row"><div class="grow">✨ <b>${blank.toLocaleString()}</b> products can be given plain-English nicknames automatically (e.g. “56 Series outlet 10A 3-pin, switched”).</div><button class="pri" id="nickAll">Add</button></div>`:""}
+    <div id="invBar"></div>
     <input class="search" id="invQ" type="search" placeholder="Search description or cat no…" value="${esc(S.invQ)}">
     <div class="row" style="margin-bottom:8px"><div class="grow mute" id="invCount"></div><button class="ghost" id="addItem">+ Add product</button></div>
     <div id="invList"></div>`;
   $("#invQ").oninput = e => { S.invQ=e.target.value; renderInvList(); };
   $("#addItem").onclick = () => editItem(null);
+  if($("#nickAll")) $("#nickAll").onclick = async e => {
+    const b = e.currentTarget; b.disabled = true; b.textContent = "Adding…";
+    const items = S.items.map(it => it.k ? it : Object.assign({}, it, {k: autoNick(it.d, it.c)}));
+    try { await replaceInventory(items, p => { b.textContent = Math.round(p*100) + "%"; }); toast("Nicknames added"); render(true); }
+    catch(err){ b.disabled = false; b.textContent = "Add"; writeErr(err); }
+  };
   renderInvList();
 }
 function renderInvList(){
@@ -1246,12 +1470,19 @@ function renderInvList(){
   const {list, total} = filterItems(f, S.invQ, 100);
   $("#invCount").textContent = S.items.length ? `${total.toLocaleString()} of ${S.items.length.toLocaleString()} products` : "";
   if(!S.items.length){ box.innerHTML = `<div class="empty">No products yet.<br><br>${S.isAdmin?"Tap <b>Import</b> to load":"An admin can import"} a supplier's order history or price file (CSV or Excel), or add products one at a time.</div>`; return; }
-  box.innerHTML = `<div class="card" style="padding:2px 14px">${list.map(itemRowHTML).join("")}</div>${total>list.length?`<div class="mute" style="text-align:center">Showing the ${list.length} most used – search to find others</div>`:""}`;
+  box.innerHTML = `<div class="card" style="padding:2px 14px">${list.map(itemRowHTML).join("")}</div>${total>list.length?`<div class="mute" style="text-align:center">Showing the ${list.length} most used – search to find others</div>`:""}
+    ${S.isAdmin?`<div style="text-align:center;margin-top:14px"><button class="ghost" id="nickRedo" style="font-weight:400;font-size:13px">Redo all automatic nicknames…</button></div>`:""}`;
+  if($("#nickRedo")) $("#nickRedo").onclick = async () => {
+    if(!(await confirmBox("Rebuild every product's nickname from its description? This also replaces any nicknames you've typed in yourself.", "Redo nicknames"))) return;
+    toast("Updating nicknames…");
+    try { await replaceInventory(S.items.map(it => Object.assign({}, it, {k: autoNick(it.d, it.c)}))); toast("Nicknames updated"); render(true); } catch(err){ writeErr(err); }
+  };
   box.querySelectorAll("[data-k]").forEach(el => el.onclick = () => editItem(list[Number(el.dataset.k)]));
 }
 function editItem(it){
   const isNew = !it; const x = it ? clone(it) : {s:(S.invF&&S.invF.s)||S.settings.supplier||"", g:(S.invF&&S.invF.g)||"", c:"", d:"", b:"", u:"", n:0, p:""};
   openModal(`<h3>${isNew?"Add product":"Edit product"}</h3>
+    <label>Nickname (optional)</label><input id="iK" value="${esc(x.k||"")}" placeholder="e.g. Double GPO white, 20A RCBO">
     <label>Description</label><input id="iD" value="${esc(x.d)}">
     <div class="grid2"><div><label>Cat no</label><input id="iC" value="${esc(x.c)}" style="text-transform:uppercase"></div><div><label>Supplier</label>${supplierInput("iS", x.s)}</div></div>
     <label>Product type</label>${typeSelect("iG", x.g)}
@@ -1262,7 +1493,7 @@ function editItem(it){
   $("#mCancel").onclick = closeModal;
   if(!isNew) $("#iDel").onclick = async () => { try{ await deleteItem(it); closeModal(); toast("Deleted"); }catch(e){ writeErr(e); } };
   $("#iSave").onclick = async () => {
-    const n = Object.assign({}, x, {c:$("#iC").value.trim().toUpperCase(), d:$("#iD").value.trim(), s:$("#iS").value.trim(), g:$("#iG").value, b:$("#iB").value.trim(), u:$("#iU").value.trim()});
+    const n = Object.assign({}, x, {k:$("#iK").value.trim(), c:$("#iC").value.trim().toUpperCase(), d:$("#iD").value.trim(), s:$("#iS").value.trim(), g:$("#iG").value, b:$("#iB").value.trim(), u:$("#iU").value.trim()});
     if($("#iP")) n.p = Number($("#iP").value)||0;
     if(!n.d){ toast("Enter a description."); return; }
     if(!n.c) n.c = "X-"+uid().slice(-6).toUpperCase();
@@ -1294,6 +1525,7 @@ const FIELDS = [
   ["b","Brand",/brand|manuf|make/i],
   ["u","Unit",/^unit$|uom|unit\s*of|^per$|sell\s*unit/i],
   ["g","Product type",/categ|group|class|dept|family|type/i],
+  ["k","Nickname",/nick|alias|short\s*name|our\s*name/i],
   ["p","Price (optional)",/(nett?|trade|your|cost|buy|sell)?\s*price|cost|nett|ex\s*gst/i]];
 function guessMap(hdr){
   const map={}; const used=new Set();
@@ -1356,7 +1588,7 @@ function importDialog(){
         data.forEach(r => {
           const c = String(r[ic]||"").trim().toUpperCase(); if(!c) return;
           let it = agg.get(c);
-          if(!it){ it = {s:sup, g:autoType(r[id]), c, d:String(r[id]||"").trim(), b:BRAND_PREFIX[c.slice(0,3)]||"", u:"", n:0, l:"", p:0}; agg.set(c, it); }
+          if(!it){ it = {s:sup, g:autoType(r[id]), k:autoNick(r[id], c), c, d:String(r[id]||"").trim(), b:BRAND_PREFIX[c.slice(0,3)]||"", u:"", n:0, l:"", p:0}; agg.set(c, it); }
           it.n++; const d = ymd(r[idt]); if(d > it.l) it.l = d;
         });
         return [...agg.values()].sort((a,b)=>b.n-a.n);
@@ -1366,7 +1598,7 @@ function importDialog(){
       data.forEach(r => {
         const d = g("d")(r); if(!d) return;
         let c = g("c")(r).toUpperCase(); if(!c) c = "X-"+uid().slice(-7).toUpperCase();
-        const it = {s:sup, g:(TYPE_NAMES.includes(g("g")(r)) ? g("g")(r) : autoType(d)), c, d, b:g("b")(r), u:g("u")(r), n:0, l:"", p:Number(g("p")(r).replace(/[^0-9.\-]/g,""))||0};
+        const it = {s:sup, k:g("k")(r) || autoNick(d, c), g:(TYPE_NAMES.includes(g("g")(r)) ? g("g")(r) : autoType(d)), c, d, b:g("b")(r), u:g("u")(r), n:0, l:"", p:Number(g("p")(r).replace(/[^0-9.\-]/g,""))||0};
         agg.set(c, it);
       });
       return [...agg.values()];
@@ -1389,7 +1621,7 @@ function importDialog(){
       const mp = new Map(keep.map(it=>[itemKey(it), it]));
       incoming.forEach(it => {
         const o = mp.get(itemKey(it));
-        if(o){ for(const k of ["d","b","u"]) if(it[k]) o[k]=it[k]; if(it.p) o.p=it.p; if(it.n) o.n=it.n; if(it.l) o.l=it.l; if(!o.g || o.g==="Other") o.g=it.g; }
+        if(o){ for(const k of ["d","b","u"]) if(it[k]) o[k]=it[k]; if(it.k && !o.k) o.k = it.k; if(it.p) o.p=it.p; if(it.n) o.n=it.n; if(it.l) o.l=it.l; if(!o.g || o.g==="Other") o.g=it.g; }
         else mp.set(itemKey(it), it);
       });
       const merged = [...mp.values()];
