@@ -6,5 +6,5 @@
 //  Then click "Commit changes". That's the only thing you need to edit.
 // ─────────────────────────────────────────────────────────────────────────────
 window.APP_CONFIG = {
-  apiUrl: "https://script.google.com/macros/s/AKfycbybph_qpw2UVLaY4JlQBUcfnndiAmf30dzfxtqsMC4/dev"
+  apiUrl: "https://script.google.com/macros/s/AKfycbyehO2tK1bZqNOeQR8jeBUO3MXHIl-fhmbcIReO46dkudosoC_FjZ1WXSs-TU4JLFta/exec"
 };
