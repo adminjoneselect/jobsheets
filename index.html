@@ -1416,13 +1416,13 @@ function editHours(h){
   openModal(`<h3>${isNew?"Add hours":"Edit hours"} – ${esc(worker)}</h3><div class="mute">${fmtD(e.date)}</div>
     ${isNew && !tsOnlyMe()?`<label>Job</label><select id="hJob"><option value="">Not on a job card – type it in below</option>${open.map(j=>`<option value="${esc(j.id)}">#${esc(j.jobNo)} · ${esc(j.customer)}</option>`).join("")}</select>`:""}
     <div id="hFree"><div class="grid2"><div><label>Job number</label><input id="hNo" value="${esc(e.jobNo)}" placeholder="${tsOnlyMe()?"e.g. 70424":"optional"}" inputmode="numeric" list="hNoList" autocomplete="off"><datalist id="hNoList">${knownJobs().map(k=>`<option value="${esc(k.no)}">${esc(k.cust)}</option>`).join("")}</datalist></div>
-    <div><label>Customer / where</label><input id="hCu" value="${esc(e.customer)}" placeholder="e.g. Yard, Travel"></div></div></div>
+    <div><label>Customer</label><input id="hCu" value="${esc(e.customer)}" placeholder="e.g. GW, Prison, Shed"></div></div></div>
     <div class="grid2"><div><label>Start</label><input id="hS" type="time" value="${esc(e.start)}"></div>
     <div><label>Finish</label><input id="hF" type="time" value="${esc(e.finish)}"></div></div>
     ${lunchHTML(worker, e.date)}
     <div class="grid2"><div><label>Vehicle rego</label><input id="hR" value="${esc(e.rego)}" style="text-transform:uppercase"></div>
     <div><label>&nbsp;</label><label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin:0;padding:9px 0"><input type="checkbox" id="hW" style="width:auto" ${e.wip?"checked":""}> WIP</label></div></div>
-    <label>What was done</label><textarea id="hD" placeholder="e.g. Loading van, picking up materials">${esc(e.desc)}</textarea>
+    <label>Job Description / Location</label><textarea id="hD" placeholder="e.g. Shed Time, Gippsland Water Factory, Superior, Ect">${esc(e.desc)}</textarea>
     <div class="mute" id="hHrs" style="margin-top:8px"></div>
     <div class="actions">${isNew?"":`<button class="danger" id="hDel" style="margin-right:auto">Delete</button>`}<button id="mCancel">Cancel</button><button class="pri" id="hSave">Save</button></div>`);
   const upd = () => { const x={start:$("#hS").value, finish:$("#hF").value}; const L = readLunch(); const lm = overlapWith(x, L);
