@@ -9,10 +9,10 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Job Sheets">
+<meta name="apple-mobile-web-app-title" content="Timesheets">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <script src="config.js"></script>
-<title>WR & EL Jones Electrical – Job Sheets</title>
+<title>Timesheets – WR & EL Jones Electrical</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
 <style>
@@ -70,6 +70,7 @@ table.wk td[data-d]{cursor:pointer}
 .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:99px;font-size:14px;z-index:30;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
 #toast.show{opacity:1}
+#upd{display:none;background:#e3f1e8;color:#14532d;padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer}
 #banner{display:none;background:#fdeee4;color:#7a2f0f;padding:10px 16px;font-size:14px}
 .empty{text-align:center;color:var(--mute);padding:30px 10px}
 /* timesheet form look */
@@ -88,7 +89,7 @@ table.wk td[data-d]{cursor:pointer}
 </style>
 </head>
 <body>
-<div id="banner"></div>
+<div id="banner"></div><div id="upd"></div>
 <header class="top"><button id="backBtn" class="ghost" style="display:none">‹ Back</button><h1 id="title">Jobs</h1><span id="topAct"></span></header>
 <main id="main"><div class="empty">Loading…</div></main>
 <nav class="tabs" style="display:none">
@@ -123,6 +124,27 @@ const money = n => "$" + (Number(n)||0).toLocaleString("en-AU",{minimumFractionD
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 const clone = o => JSON.parse(JSON.stringify(o ?? null));
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),2400); }
+const APP_VERSION = "2026.11.13.2";   // must match APP_VERSION in Code.gs
+const verNum = v => String(v||"0").split(".").map(n=>parseInt(n,10)||0);
+const verCmp = (a,b) => { const x=verNum(a), y=verNum(b); for(let i=0;i<Math.max(x.length,y.length);i++){ const d=(x[i]||0)-(y[i]||0); if(d) return d; } return 0; };
+/* compare this page with the Google script after each load */
+/* versions are shown as the date they were made, e.g. "13 Nov 2026" */
+const verDate = v => { const [y,m,d] = verNum(v); return y ? `${d} ${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m-1]} ${y}` : ""; };
+const verLine = () => `<div class="card" style="text-align:center"><div class="mute">App version</div><div style="font-size:20px;font-weight:700">${verDate(APP_VERSION)}</div>${S.serverVersion && verCmp(S.serverVersion, APP_VERSION) ? `<div class="mute">Google script: ${esc(verDate(S.serverVersion))}</div>` : ""}</div>`;
+function checkVersion(server){
+  S.serverVersion = server || "";
+  const u = $("#upd"); if(!u) return;
+  if(server && verCmp(server, APP_VERSION) > 0){
+    u.textContent = `A new version of the app (${verDate(server)}) is ready – tap here to update`;
+    u.onclick = async () => { u.textContent = "Updating…";
+      try { const r = navigator.serviceWorker && await navigator.serviceWorker.getRegistration(); if(r) await r.update(); } catch(e){}
+      location.reload(); };
+    u.style.display = "block";
+  } else if(server && verCmp(server, APP_VERSION) < 0 && S.isAdmin){
+    u.textContent = `Admin: the Google script is still the ${verDate(server)} version. In Apps Script, paste the new Code.gs and deploy a new version.`;
+    u.onclick = null; u.style.display = "block";
+  } else u.style.display = "none";
+}
 function banner(msg){ const b=$("#banner"); b.textContent=msg||""; b.style.display=msg?"block":"none"; }
 let LS = null; try { LS = window.localStorage; } catch(e) {}
 const lsGet = (k,d) => { try { const v = LS && LS.getItem(k); return v==null ? d : JSON.parse(v); } catch(e){ return d; } };
@@ -149,19 +171,25 @@ const allItems = () => S.items;
 /* The app talks to the Google Apps Script back end. Hosted on GitHub Pages it uses fetch() to the web app URL in
    config.js; opened straight from the Apps Script link it uses google.script.run. Both reach the same api(). */
 const API_URL = (window.APP_CONFIG && window.APP_CONFIG.apiUrl) || "";
+function authFor(){ return S.me ? Object.assign({}, S.me, {code: lsGet("code", "")}) : null; }
+/* the access code was changed or is missing: ask for it again (name and PIN are kept) */
+function codeGone(action, e){ if(e && e.code==="code" && action!=="names"){ lsSet("code", null); location.reload(); return true; } return false; }
 function call(action, payload){
+  return call0(action, payload).catch(e => { if(codeGone(action, e)) return new Promise(()=>{}); throw e; });
+}
+function call0(action, payload){
   if(window.google && google.script && google.script.run){
     return new Promise((res, rej) => {
       google.script.run
         .withSuccessHandler(r => { if(r && r.error) rej({code:r.code||"error", message:r.error}); else res(r); })
         .withFailureHandler(e => rej({code:"unavailable", message:String((e && e.message) || e)}))
-        .api(action, S.me, payload == null ? null : payload);
+        .api(action, authFor(), payload == null ? null : payload);
     });
   }
   if(!/^https:\/\/script\.google\.com\/.+\/exec/.test(API_URL))
     return Promise.reject({code:"bad", message:"This app isn't connected to its Google Sheet yet. Put the Apps Script web app URL (ending in /exec) into config.js."});
   return fetch(API_URL, {method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, redirect:"follow",
-                         body: JSON.stringify({action, auth:S.me, payload: payload == null ? null : payload})})
+                         body: JSON.stringify({action, auth:authFor(), payload: payload == null ? null : payload})})
     .then(r => { if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
     .then(r => { if(r && r.error) throw {code:r.code||"error", message:r.error}; return r; },
           e => { throw (e && e.code) ? e : {code:"unavailable", message:"Couldn't reach the Google Sheet – check your signal. (" + String((e && e.message) || e) + ")"}; });
@@ -170,7 +198,10 @@ async function loadAll(quiet){
   try {
     const r = await call("load");
     S.settings = Object.assign(clone(DEFAULT_SETTINGS), r.settings || {}, {workers: r.workers || []});
-    S.isAdmin = !!r.isAdmin; S.jobs = r.jobs || []; S.hours = r.hours || []; S.onCall = r.onCall || []; S.lunches = r.lunches || [];
+    S.isAdmin = !!r.isAdmin; S.jobs = r.jobs || []; S.hours = r.hours || []; S.onCall = r.onCall || []; S.lunches = r.lunches || []; S.orders = r.orders || null; S.push = r.push || null;
+    if(r.mustChangePin && !$("#pinNew")){ choosePin(true); return; }
+    lsSet("tsOnlyMe", !!(r.settings && r.settings.tsOnly) && !r.isAdmin);
+    checkVersion(r.version);
     S.ready.jobs = S.ready.set = true; banner(""); render();
   } catch(e){
     if(e.code==="auth"){ signOut(); return; }
@@ -184,7 +215,8 @@ function startApp(){
   if(started) return; started = true;
   document.querySelector("nav.tabs").style.display = "";
   S.ts.worker = S.me.name;
-  loadAll(); loadInv();
+  goFromUrl();
+  loadAll().then(pushRefresh); loadInv();
   setInterval(() => { if(document.visibilityState==="visible" && $("#modal").classList.contains("hidden")) loadAll(true); }, 30000);
   document.addEventListener("visibilitychange", () => { if(document.visibilityState==="visible") loadAll(true); });
 }
@@ -195,7 +227,8 @@ async function showLogin(){
   $("#title").textContent = "Sign in";
   $("#main").innerHTML = `<div class="empty">Connecting…</div>`;
   let names;
-  try { names = await call("names"); } catch(e){ $("#main").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  try { names = await call("names", {code: lsGet("code", "")}); }
+  catch(e){ if(e.code==="code"){ lsSet("code", null); showCode(); return; } $("#main").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if(!names.length){
     $("#title").textContent = "First-time setup";
     $("#main").innerHTML = `<div class="card"><p>Welcome! Set yourself up as the first admin. You can add the rest of the crew in Settings afterwards.</p>
@@ -211,17 +244,55 @@ async function showLogin(){
     return;
   }
   $("#main").innerHTML = `<div class="card">
-    <label style="margin-top:0">Who are you?</label><select id="uN">${names.map(n=>`<option>${esc(n)}</option>`).join("")}</select>
+    <label style="margin-top:0">Who are you?</label><select id="uN">${names.slice().sort((a,b)=>a.localeCompare(b)).map(n=>`<option>${esc(n)}</option>`).join("")}</select>
     <label>PIN</label><input id="uP" type="password" inputmode="numeric" autocomplete="current-password">
     <div class="actions"><button class="pri" id="uGo">Sign in</button></div></div>
     <p class="mute" style="text-align:center">Not on the list? Ask your admin to add you in Settings.</p>`;
   const go = async () => {
     S.me = {name:$("#uN").value, pin:$("#uP").value.trim()};
-    try { await call("login"); lsSet("me", S.me); startApp(); } catch(e){ S.me = null; toast(e.code==="auth" ? "That PIN isn't right." : e.message); }
+    try { const r = await call("login"); lsSet("me", S.me); if(r && r.mustChangePin) choosePin(true); else startApp(); } catch(e){ S.me = null; toast(e.code==="auth" ? "That PIN isn't right." : e.message); }
   };
   $("#uGo").onclick = go; $("#uP").onkeydown = e => { if(e.key==="Enter") go(); };
 }
-(function boot(){ if(S.me) startApp(); else showLogin(); })();
+function showCode(){
+  document.querySelector("nav.tabs").style.display = "none";
+  $("#title").textContent = "Welcome";
+  $("#main").innerHTML = `<div class="card">
+    <p style="margin-top:0">Enter the access code your boss gave you. You only need to do this once on this phone.</p>
+    <label>Access code</label><input id="uC" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">
+    <div class="actions"><button class="pri" id="uCGo">Unlock</button></div></div>`;
+  const go = async () => {
+    const code = $("#uC").value.trim(); if(!code){ toast("Type the access code."); return; }
+    try { await call("names", {code}); lsSet("code", code); if(S.me) startApp(); else showLogin(); }
+    catch(e){ toast(e.code==="code" ? "That code isn't right." : e.message); }
+  };
+  $("#uCGo").onclick = go; $("#uC").onkeydown = e => { if(e.key==="Enter") go(); };
+  setTimeout(() => $("#uC").focus(), 50);
+}
+/* Choose your own PIN – forced at first sign-in while on the starter PIN, or from Settings any time */
+function choosePin(forced){
+  const body = `<h3>${forced ? "Choose your own PIN" : "Change my PIN"}</h3>
+    <p class="mute">${forced ? "You signed in with the starter PIN. Pick your own 4-digit PIN – you'll use it from now on." : "Pick a new PIN (4 to 8 numbers)."}</p>
+    <label>New PIN</label><input id="pinNew" type="password" inputmode="numeric" autocomplete="new-password">
+    <label>Type it again</label><input id="pinNew2" type="password" inputmode="numeric" autocomplete="new-password">
+    <div class="actions">${forced ? "" : `<button id="mCancel">Cancel</button>`}<button class="pri" id="pinSave">Save PIN</button></div>`;
+  if(forced){ document.querySelector("nav.tabs").style.display = "none"; $("#title").textContent = "Your PIN"; $("#main").innerHTML = `<div class="card">${body}</div>`; }
+  else { openModal(body); $("#mCancel").onclick = closeModal; }
+  $("#pinSave").onclick = async e => {
+    const a = $("#pinNew").value.trim(), b = $("#pinNew2").value.trim();
+    if(!/^\d{4,8}$/.test(a)){ toast("Your PIN must be 4 to 8 numbers."); return; }
+    if(a !== b){ toast("The two PINs don't match."); return; }
+    if(a === "1898"){ toast("Pick a PIN that isn't the starter PIN 1898."); return; }
+    try {
+      await busy(e.currentTarget, "Saving…", () => call("changePin", {pin:a}));
+      S.me = Object.assign({}, S.me, {pin:a}); lsSet("me", S.me); toast("PIN saved");
+      if(forced){ if(started){ document.querySelector("nav.tabs").style.display = ""; loadAll(); } else startApp(); }
+      else closeModal();
+    } catch(err){ writeErr(err); }
+  };
+  setTimeout(() => $("#pinNew").focus(), 50);
+}
+(function boot(){ if(!lsGet("code", "")) showCode(); else if(S.me) startApp(); else showLogin(); })();
 
 /* ---------- writes ---------- */
 async function saveJob(job){
@@ -231,7 +302,7 @@ async function saveJob(job){
   if(i>=0) S.jobs[i] = body; else S.jobs.push(body);
   render();
 }
-async function saveSettings(s){ await call("saveSettings", clone(s)); await loadAll(true); }
+async function saveSettings(s){ await call("saveSettings", clone(s)); if(s.accessCode) lsSet("code", s.accessCode); await loadAll(true); }
 async function upsertItem(item, oldKey){
   await call("saveItem", {item, oldKey: oldKey || null});
   const key = oldKey || itemKey(item);
@@ -264,7 +335,10 @@ function render(force){
     if(aid==="jobQ") renderJobList(); else renderInvList(); return;
   }
   if(!force && key===lastView && S.view==="settings") return; // don't wipe unsaved edits
-  lastView = key;
+  if(tsOnlyMe() && (S.view==="jobs" || S.view==="inventory")){ S.view = "timesheet"; S.jobId = null; }
+  if(tsOnlyMe()) S.ts.worker = S.me.name;
+  document.querySelectorAll('nav.tabs button[data-v="jobs"], nav.tabs button[data-v="inventory"]').forEach(b => b.style.display = tsOnlyMe() ? "none" : "");
+  lastView = S.view + "|" + (S.jobId||"");
   document.querySelectorAll("nav.tabs button").forEach(b => b.classList.toggle("on", b.dataset.v===S.view));
   $("#backBtn").style.display = S.jobId ? "" : "none";
   $("#topAct").innerHTML = "";
@@ -378,11 +452,12 @@ function viewJob(){
     <div class="card" style="padding:2px 14px">${mats.length ? mats.map((m,i)=>`
       <div class="list-item" data-m="${i}">
         <div class="num" style="min-width:42px;font-weight:700">${esc(m.qty)}${m.u?`<span class="mute"> ${esc(m.u)}</span>`:""}</div>
-        <div class="grow"><div>${esc(m.d)}</div><div class="mute">${m.date?fmtD(m.date)+" · ":""}${esc(m.c||"")}${m.s?` · ${esc(m.s)}`:""}${showPrices()&&m.p?` · ${money(m.p)} ea`:""}</div></div>
+        <div class="grow"><div>${esc(m.d)}${m.ref?` <span class="pill" title="Added automatically from a supplier order">order</span>`:""}</div><div class="mute">${m.date?fmtD(m.date)+" · ":""}${esc(m.c||"")}${m.s?` · ${esc(m.s)}`:""}${showPrices()&&m.p?` · ${money(m.p)} ea`:""}</div></div>
         <div class="num">${showPrices()&&m.p?money(m.qty*m.p):""}</div>
       </div>`).join("") + (showPrices()&&jobMat(j)?`<div class="mat-total"><span>Materials total (ex GST)</span><span class="num">${money(jobMat(j))}</span></div>`:"")
       : `<div class="empty" style="padding:16px">No materials added yet.</div>`}</div>
     ${photosHTML(j)}
+    ${docsHTML(j)}
     <h2><span>Job sheet notes</span><button class="ghost" id="editNotes">Edit</button></h2>
     <div class="card">
       <div class="row"><span style="font-size:18px">${j.jic?"☑":"☐"}</span><span>JIC/LIC</span></div>
@@ -407,7 +482,8 @@ function viewJob(){
   $("#addLab").onclick = () => editLabour(j, null);
   $("#addMat").onclick = () => pickMaterial(j);
   $("#editNotes").onclick = () => editNotes(j);
-  renderPhotos(j.id); loadPhotos(j.id);
+  renderPhotos(j.id); loadPhotos(j.id); renderDocs(j.id); loadDocs(j.id);
+  $("#dcIn").onchange = e => { const f = e.target.files; uploadDocs(j, f); e.target.value = ""; };
   $("#phIn").onchange = e => { const f = e.target.files; uploadPhotos(j, f); e.target.value = ""; };
   document.querySelectorAll("[data-i]").forEach(el => el.onclick = () => editLabour(j, Number(el.dataset.i)));
   document.querySelectorAll("[data-m]").forEach(el => el.onclick = () => editMaterial(j, Number(el.dataset.m)));
@@ -709,6 +785,8 @@ function autoType(d){ d = String(d||"").toUpperCase(); for(const [n,rx] of TYPE_
 const BRAND_PREFIX = {CLI:"Clipsal", HAG:"Hager", OLX:"Olex", EAT:"Eaton", NHP:"NHP", HPM:"HPM", ABB:"ABB"};
 const itemKey = it => ((it.s||"") + "|" + (it.c||"")).toUpperCase();
 const showPrices = () => !!S.settings.showPrices;
+/* Timesheets-only mode: workers (not admins) just get Timesheet + Settings */
+const tsOnlyMe = () => S.ready.set ? (!!S.settings.tsOnly && !S.isAdmin) : !!lsGet("tsOnlyMe", false);   // remembered so the phone opens straight on the timesheet
 function suppliersOf(){ return [...new Set(S.items.map(i=>i.s||"").filter(Boolean))].sort((a,b)=>a.localeCompare(b)); }
 function typesOf(sup){
   const m = new Map();
@@ -887,7 +965,7 @@ function editMaterial(job, i){
     <div class="actions"><button class="danger" id="eDel" style="margin-right:auto">Remove</button><button id="mCancel">Cancel</button><button class="pri" id="eSave">Save</button></div>`);
   bindFrom(m);
   $("#mCancel").onclick = closeModal;
-  $("#eDel").onclick = async () => { const x=clone(job); x.materials.splice(i,1); try{ await saveJob(x); closeModal(); }catch(e){ writeErr(e); } };
+  $("#eDel").onclick = async () => { const x=clone(job); const gone=x.materials.splice(i,1)[0]; if(gone && gone.ref) x.deletedRefs=[gone.ref]; try{ await saveJob(x); closeModal(); }catch(e){ writeErr(e); } };
   $("#eSave").onclick = async () => {
     const x=clone(job); const y=x.materials[i];
     y.qty=Number($("#eQ").value)||0; if($("#eP")) y.p=Number($("#eP").value)||0; y.d=$("#eD").value.trim()||y.d; y.c=$("#eC").value.trim().toUpperCase(); y.date=$("#eDt").value;
@@ -940,6 +1018,158 @@ function editLunch(name, date){
   };
 }
 
+/* ---------- Documents on jobs (invoices, delivery dockets, quotes…) ---------- */
+S.docs = {};
+async function loadDocs(jobId, force){
+  if(S.docs[jobId] && !force) return;
+  try { S.docs[jobId] = await call("docs", {jobId}) || []; } catch(e){ S.docs[jobId] = S.docs[jobId] || []; console.error(e); }
+  if(S.jobId===jobId) renderDocs(jobId);
+}
+function docsHTML(j){
+  return `<h2><span>Documents${S.docs[j.id]?` · ${S.docs[j.id].length}`:""}</span>
+    <label class="ghost" style="margin:0;color:var(--acc);font-weight:600;font-size:15px;text-transform:none;letter-spacing:0;cursor:pointer">+ Add document<input type="file" id="dcIn" accept=".pdf,image/*,.csv,.xlsx,.xls,.doc,.docx,.txt" multiple style="display:none"></label></h2>
+    <div class="card" id="dcBox" style="padding:2px 14px"></div>`;
+}
+const docIcon = m => /pdf/.test(m) ? "📄" : /image/.test(m) ? "🖼️" : /sheet|excel|csv/.test(m) ? "📊" : "📎";
+const kb = n => n > 1048576 ? (n/1048576).toFixed(1)+" MB" : Math.max(1, Math.round(n/1024))+" KB";
+function renderDocs(jobId){
+  const box = $("#dcBox"); if(!box) return;
+  const list = S.docs[jobId];
+  const h2 = box.previousElementSibling && box.previousElementSibling.querySelector("span");
+  if(h2) h2.textContent = "Documents" + (list ? ` · ${list.length}` : "");
+  if(list == null){ box.innerHTML = `<div class="mute" style="padding:10px 0">Loading…</div>`; return; }
+  box.innerHTML = (S.dUpload && S.dUpload.jobId===jobId ? `<div class="mute" style="padding:8px 0">Uploading ${S.dUpload.done+1} of ${S.dUpload.total}…</div>` : "") +
+    (list.length ? list.map((d,i)=>`<div class="list-item" data-dc="${i}"><div style="font-size:22px">${docIcon(d.mime)}</div><div class="grow"><div>${esc(d.label||d.name)}</div>
+      <div class="mute">${d.label?esc(d.name)+" · ":""}${esc(d.by)} · ${fmtD(d.date)} · ${kb(d.size)}</div></div></div>`).join("")
+      : `<div class="mute" style="padding:10px 0">No documents yet. Add wholesaler invoices, delivery dockets or quotes (PDF or photo).</div>`);
+  box.querySelectorAll("[data-dc]").forEach(el => el.onclick = () => viewDoc(jobId, list[Number(el.dataset.dc)]));
+}
+const fileB64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(f); });
+async function uploadDocs(job, files){
+  files = [...files]; if(!files.length) return;
+  const big = files.find(f => f.size > 20*1024*1024); if(big){ toast(`${big.name} is too big (over 20 MB).`); return; }
+  S.dUpload = {jobId:job.id, done:0, total:files.length}; renderDocs(job.id);
+  let ok = 0;
+  for(const f of files){
+    try {
+      const d = await call("uploadDoc", {jobId:job.id, jobNo:job.jobNo, customer:job.customer, name:f.name, mime:f.type||"", data: await fileB64(f), date:today()});
+      (S.docs[job.id] = S.docs[job.id] || []).push(d); ok++;
+    } catch(e){ console.error(e); toast(e && e.message ? e.message : "A document couldn't be uploaded."); }
+    S.dUpload.done++; renderDocs(job.id);
+  }
+  S.dUpload = null; renderDocs(job.id);
+  if(ok) toast(`${ok} document${ok===1?"":"s"} added`);
+}
+function viewDoc(jobId, d){
+  const canDel = S.isAdmin || d.by===S.me.name;
+  openModal(`<h3>${docIcon(d.mime)} ${esc(d.label||d.name)}</h3><div class="mute">${esc(d.name)} · ${esc(d.by)} · ${fmtD(d.date)} · ${kb(d.size)}</div>
+    <label>Label</label><input id="dcLab" value="${esc(d.label||"")}" placeholder="e.g. L&H invoice – switchboard gear">
+    <div class="actions">${canDel?`<button class="danger" id="dcDel" style="margin-right:auto">Delete</button>`:""}<button id="dcOpen">Open</button><button class="pri" id="dcSave">Save</button></div>
+    <div class="mute" id="dcMsg"></div>`);
+  $("#dcSave").onclick = async () => { try{ await call("labelDoc", {id:d.id, label:$("#dcLab").value.trim()}); d.label = $("#dcLab").value.trim(); closeModal(); renderDocs(jobId); }catch(e){ writeErr(e); } };
+  $("#dcOpen").onclick = async e => {
+    try {
+      const r = await busy(e.currentTarget, "Opening…", () => call("doc", {id:d.id}));
+      const bin = atob(r.data), u8 = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([u8], {type:r.mime||d.mime||"application/octet-stream"}));
+      const a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener"; if(!/pdf|image/.test(r.mime||"")) a.download = r.name || d.name;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 120000);
+    } catch(err){ writeErr(err); }
+  };
+  if(canDel) $("#dcDel").onclick = async () => {
+    if(!(await confirmBox("Delete this document? It goes to the Drive bin."))) return;
+    try{ await call("deleteDoc", {id:d.id}); S.docs[jobId] = (S.docs[jobId]||[]).filter(x=>x.id!==d.id); renderDocs(jobId); toast("Deleted"); }catch(e){ writeErr(e); }
+  };
+}
+
+/* ---------- Supplier orders → job materials (admin) ---------- */
+function ordersCardHTML(){
+  const o = S.orders || {}; const last = o.last;
+  return `<h2><span>Supplier orders → jobs</span></h2>
+    <div class="card">
+      <div class="mute">Order and invoice lines whose order number is a job number are added to that job's materials automatically.</div>
+      ${o.error==="needs-auth" ? `<div class="mute" style="color:var(--warn);margin-top:8px">One more permission is needed: in Apps Script run <b>setup</b> once and click Allow, then redeploy.</div>` : `
+      <label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin-top:10px"><input type="checkbox" id="oAuto" style="width:auto" ${o.on?"checked":""}> Check email every hour for supplier CSV files</label>
+      <div class="mute" style="margin-top:2px">${last?`Last check ${esc(last.at)}: ${last.files} file${last.files===1?"":"s"}, ${last.added} line${last.added===1?"":"s"} added to jobs, ${last.unmatched} unmatched.`:"Not checked yet."}</div>`}
+      <label>Which emails to read (Gmail search)</label><input id="oQ" value="${esc(S.settings.emailQuery||"has:attachment filename:csv newer_than:30d")}">
+      <div class="mute" style="margin-top:4px">e.g. <i>from:ebranch has:attachment filename:csv</i>. Emails that have been read are labelled “Job Sheets/Imported”.</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:10px">
+        <button id="oNow" style="flex:1">Check email now</button>
+        <label class="btn" style="flex:1;text-align:center;margin:0;text-transform:none;letter-spacing:0;font-size:15px;color:var(--ink);font-weight:400;cursor:pointer">Import a file…<input type="file" id="oFile" accept=".csv,.txt,.tsv,.xlsx,.xls" style="display:none"></label>
+      </div>
+      <button class="${o.unmatched?"pri":""}" id="oUn" style="width:100%;margin-top:8px">Unmatched lines${o.unmatched!=null?` (${o.unmatched})`:""}</button>
+    </div>`;
+}
+function bindOrdersCard(){
+  if(!$("#oUn")) return;
+  if($("#oAuto")) $("#oAuto").onchange = async e => { const on = e.target.checked; e.target.disabled = true;
+    try{ S.orders = Object.assign({}, S.orders, await call("emailImport", {on})); toast(on ? "Email check switched on – runs every hour" : "Email check switched off"); }
+    catch(err){ e.target.checked = !on; writeErr(err); } finally { e.target.disabled = false; } };
+  $("#oNow").onclick = async e => {
+    try { const r = await busy(e.currentTarget, "Checking…", () => call("checkEmailNow")); S.orders = Object.assign({}, S.orders, {last:r, unmatched:(S.orders&&S.orders.unmatched||0)+r.unmatched});
+      toast(`${r.files} file${r.files===1?"":"s"} read: ${r.added} line${r.added===1?"":"s"} added to jobs, ${r.unmatched} unmatched`); await loadAll(true); viewSettings(); } catch(err){ writeErr(err); } };
+  $("#oFile").onchange = e => { const f = e.target.files[0]; e.target.value = ""; if(f) importOrdersDialog(f); };
+  $("#oUn").onclick = reviewUnmatched;
+}
+async function readTable(file){
+  if(/\.xlsx?$/i.test(file.name)){
+    if(!window.XLSX) throw {code:"bad", message:"Excel reader still loading – try again in a second."};
+    const wb = XLSX.read(await file.arrayBuffer(), {type:"array"});
+    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, defval:"", raw:false});
+  }
+  return parseCSV((await file.text()).replace(/^﻿/,""));
+}
+async function importOrdersDialog(file){
+  let rows; try { rows = (await readTable(file)).filter(r => r.some(c => String(c).trim()!=="")); } catch(e){ writeErr(e); return; }
+  const guess = /lawrence|l&h|\blh\b|ebranch|orderhistory/i.test(file.name) ? "L&H" : (S.settings.supplier||"");
+  openModal(`<h3>Import supplier orders</h3><p><b>${rows.length.toLocaleString()}</b> rows in <b>${esc(file.name)}</b>. Lines whose order number matches a job number are added to that job's materials; the rest go to <b>Unmatched</b>. Lines already imported are skipped.</p>
+    <label>Supplier</label>${supplierInput("oSup", guess)}
+    <label>Only lines dated on or after</label><input id="oSince" type="date" value="${esc(addDays(today(), -30))}">
+    <div class="mute" style="margin-top:4px">Clear the date to import everything in the file.</div>
+    <div class="actions"><button id="mCancel">Cancel</button><button class="pri" id="oGo">Import</button></div>`);
+  $("#mCancel").onclick = closeModal;
+  $("#oGo").onclick = async e => {
+    const supplier = $("#oSup").value.trim(); if(!supplier){ toast("Enter the supplier."); return; }
+    try {
+      const r = await busy(e.currentTarget, "Importing…", () => call("importOrders", {rows, supplier, since:$("#oSince").value, filename:file.name}));
+      const js = Object.entries(r.jobs||{});
+      openModal(`<h3>Import finished</h3><p><b>${r.added}</b> line${r.added===1?"":"s"} added to ${js.length} job${js.length===1?"":"s"}${js.length?": "+js.map(([n,c])=>`#${esc(n)} (${c})`).join(", "):""}.</p>
+        <p><b>${r.unmatched}</b> unmatched (no job with that order number). ${r.skipped?`${r.skipped} already imported before – skipped.`:""}</p>
+        <div class="actions">${r.unmatched?`<button id="toUn">Review unmatched</button>`:""}<button class="pri" id="mCancel">Done</button></div>`);
+      $("#mCancel").onclick = () => { closeModal(); viewSettings(); };
+      if($("#toUn")) $("#toUn").onclick = reviewUnmatched;
+      S.orders = Object.assign({}, S.orders, {unmatched:(S.orders&&S.orders.unmatched||0)+r.unmatched});
+      await loadAll(true);
+    } catch(err){ writeErr(err); }
+  };
+}
+async function reviewUnmatched(){
+  openModal(`<h3>Unmatched order lines</h3><div class="mute">Loading…</div>`);
+  let list; try { list = await call("unmatched"); } catch(e){ closeModal(); writeErr(e); return; }
+  const groups = {}; list.forEach(l => { const k = l.supplier+" · "+(l.ref||"(no order number)"); (groups[k] = groups[k] || []).push(l); });
+  const keys = Object.keys(groups).sort((a,b) => (groups[b][0].date||"").localeCompare(groups[a][0].date||""));
+  const open = S.jobs.filter(j=>j.status!=="complete").sort((a,b)=>String(b.jobNo).localeCompare(String(a.jobNo),undefined,{numeric:true}));
+  const jobOpts = `<option value="">Add to job…</option>` + open.map(j=>`<option value="${esc(j.id)}">#${esc(j.jobNo)} · ${esc(j.customer)}</option>`).join("");
+  openModal(`<h3>Unmatched order lines · ${list.length}</h3>
+    <div class="mute">Lines whose order number isn't a job number (e.g. STOCK, a van rego, a name). Add a whole order to a job, or dismiss it.</div>
+    ${keys.length ? keys.slice(0,60).map((k,gi)=>`<div class="card" style="margin-top:10px"><div><b>${esc(k)}</b> <span class="mute">${fmtD(groups[k][0].date)}</span></div>
+      ${groups[k].slice(0,8).map(l=>`<div class="mute" style="font-size:13px">${l.qty}${l.u?" "+esc(l.u):""} × ${esc(l.d)}</div>`).join("")}${groups[k].length>8?`<div class="mute" style="font-size:13px">…and ${groups[k].length-8} more</div>`:""}
+      <div class="row" style="margin-top:8px"><select data-ug="${gi}" class="grow">${jobOpts}</select><button class="danger" data-ud="${gi}">Dismiss</button></div></div>`).join("")
+      : `<div class="empty">Nothing unmatched 🎉</div>`}
+    ${keys.length>60?`<div class="mute">Showing the 60 newest orders.</div>`:""}
+    <div class="actions"><button class="pri" id="mCancel">Done</button></div>`);
+  $("#mCancel").onclick = () => { closeModal(); if(S.view==="settings") viewSettings(); };
+  document.querySelectorAll("[data-ug]").forEach(sel => sel.onchange = async () => {
+    const g = groups[keys[Number(sel.dataset.ug)]]; if(!sel.value) return;
+    try { const r = await call("assignUnmatched", {keys:g.map(l=>l.key), jobId:sel.value}); toast(`${r.moved} line${r.moved===1?"":"s"} added to the job`);
+      S.orders = Object.assign({}, S.orders, {unmatched:Math.max(0,(S.orders&&S.orders.unmatched||0)-r.moved)}); await loadAll(true); reviewUnmatched(); } catch(e){ writeErr(e); }
+  });
+  document.querySelectorAll("[data-ud]").forEach(b => b.onclick = async () => {
+    const g = groups[keys[Number(b.dataset.ud)]];
+    try { await call("dismissUnmatched", {keys:g.map(l=>l.key)}); S.orders = Object.assign({}, S.orders, {unmatched:Math.max(0,(S.orders&&S.orders.unmatched||0)-g.length)}); reviewUnmatched(); } catch(e){ writeErr(e); }
+  });
+}
+
 /* ---------- On call ---------- */
 const isOnCall = (name, date) => (S.onCall||[]).some(o => o.name===name && o.date===date);
 async function setOnCall(name, date, on){
@@ -967,7 +1197,8 @@ function weekData(start){
 function viewWeek(){
   $("#title").textContent = "Weekly hours";
   const start = weekStart(S.ts.date);
-  const {days, rows, ord} = weekData(start);
+  let {days, rows, ord} = weekData(start);
+  if(tsOnlyMe()) rows = rows.filter(r=>r.name===S.me.name);
   const D = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   const tot = rows.reduce((s,r)=>s+r.total,0);
   $("#main").innerHTML = `${modeChips()}
@@ -975,7 +1206,7 @@ function viewWeek(){
       <label style="margin-top:0">Week</label>
       <div class="row"><button id="wkPrev">‹</button><div class="grow" style="text-align:center"><b>${fmtD(start)}</b> – <b>${fmtD(days[6])}</b></div><button id="wkNext">›</button></div>
       <div style="margin-top:10px"><span class="big num">${hrs(tot)}</span> <span class="mute">hours · ${rows.length} ${rows.length===1?"person":"people"} · ordinary hours ${ord}/week</span></div>
-      ${rows.some(r=>r.total>0||r.oc.some(Boolean)) ? pdfButtons("wk") : ""}
+      ${!tsOnlyMe() && rows.some(r=>r.total>0||r.oc.some(Boolean)) ? pdfButtons("wk") : ""}
     </div>
     <div class="card" style="overflow-x:auto;padding:8px">
       <table class="wk"><tr><th style="text-align:left">Name</th>${days.map((d,i)=>`<th>${D[i]}<br><span class="mute">${parseD(d).getDate()}</span></th>`).join("")}<th>Total</th><th>O/T</th></tr>
@@ -1183,8 +1414,8 @@ function editHours(h){
                      rego:regoFor(worker), wip:false, desc:"", jobNo:"", customer:""} : clone(h);
   const open = S.jobs.filter(j=>j.status!=="complete").sort((a,b)=>String(b.jobNo).localeCompare(String(a.jobNo),undefined,{numeric:true}));
   openModal(`<h3>${isNew?"Add hours":"Edit hours"} – ${esc(worker)}</h3><div class="mute">${fmtD(e.date)}</div>
-    ${isNew?`<label>Job</label><select id="hJob"><option value="">Not on a job card – type it in below</option>${open.map(j=>`<option value="${esc(j.id)}">#${esc(j.jobNo)} · ${esc(j.customer)}</option>`).join("")}</select>`:""}
-    <div id="hFree"><div class="grid2"><div><label>Job number</label><input id="hNo" value="${esc(e.jobNo)}" placeholder="optional"></div>
+    ${isNew && !tsOnlyMe()?`<label>Job</label><select id="hJob"><option value="">Not on a job card – type it in below</option>${open.map(j=>`<option value="${esc(j.id)}">#${esc(j.jobNo)} · ${esc(j.customer)}</option>`).join("")}</select>`:""}
+    <div id="hFree"><div class="grid2"><div><label>Job number</label><input id="hNo" value="${esc(e.jobNo)}" placeholder="${tsOnlyMe()?"e.g. 70424":"optional"}" inputmode="numeric" list="hNoList" autocomplete="off"><datalist id="hNoList">${knownJobs().map(k=>`<option value="${esc(k.no)}">${esc(k.cust)}</option>`).join("")}</datalist></div>
     <div><label>Customer / where</label><input id="hCu" value="${esc(e.customer)}" placeholder="e.g. Yard, Travel"></div></div></div>
     <div class="grid2"><div><label>Start</label><input id="hS" type="time" value="${esc(e.start)}"></div>
     <div><label>Finish</label><input id="hF" type="time" value="${esc(e.finish)}"></div></div>
@@ -1198,6 +1429,7 @@ function editHours(h){
     $("#hHrs").textContent = `Hours: ${hrs(Math.max(0,grossMin(x)-lm)/60)}` + (L.none ? " (no lunch taken)" : lm ? ` (${hrs(grossMin(x)/60)} less ${lm} min lunch)` : ""); };
   ["hS","hF"].forEach(id => $("#"+id).oninput = upd); bindLunch(upd); upd();
   if($("#hJob")) $("#hJob").onchange = () => { $("#hFree").style.display = $("#hJob").value ? "none" : ""; };
+  $("#hNo").oninput = () => { const k = knownJobs().find(x=>x.no===$("#hNo").value.trim()); if(k && k.cust && !$("#hCu").value.trim()) $("#hCu").value = k.cust; };
   $("#mCancel").onclick = closeModal;
   if(!isNew) $("#hDel").onclick = async () => { try{ await call("deleteHours", {id:e.id}); S.hours = S.hours.filter(x=>x.id!==e.id); closeModal(); render(); toast("Removed"); }catch(err){ writeErr(err); } };
   $("#hSave").onclick = async () => {
@@ -1222,6 +1454,14 @@ function editHours(h){
       closeModal(); toast("Saved");
     } catch(err){ $("#hSave").disabled=false; writeErr(err); }
   };
+}
+/* job numbers already used (job cards + typed-in hours), newest first, for the job number suggestions */
+function knownJobs(){
+  const m = new Map();
+  const add = (no, cust, d) => { no = String(no||"").trim(); if(!no) return; const o = m.get(no); if(!o || (d||"") > o.d) m.set(no, {no, cust: cust || (o && o.cust) || "", d: d||""}); };
+  (S.jobs||[]).filter(j=>j.status!=="complete").forEach(j => add(j.jobNo, j.customer, lastDate(j)));
+  (S.hours||[]).forEach(h => add(h.jobNo, h.customer, h.date));
+  return [...m.values()].sort((a,b)=>b.d.localeCompare(a.d)).slice(0,60);
 }
 function tsRows(worker, date){
   const rows = [];
@@ -1260,7 +1500,7 @@ function viewTimesheet(){
   $("#main").innerHTML = `${modeChips()}
     <div class="card">
       <label style="margin-top:0">Name</label>
-      ${names.length?`<select id="tsW">${names.map(n=>`<option ${n===S.ts.worker?"selected":""}>${esc(n)}</option>`).join("")}</select>`:`<div class="mute">Add your workers in Settings (or add a labour entry to a job) first.</div>`}
+      ${tsOnlyMe()?`<div style="padding:6px 0"><b>${esc(S.me.name)}</b></div>`:names.length?`<select id="tsW">${names.map(n=>`<option ${n===S.ts.worker?"selected":""}>${esc(n)}</option>`).join("")}</select>`:`<div class="mute">Add your workers in Settings (or add a labour entry to a job) first.</div>`}
       <label>Date</label>
       <div class="row"><button id="tsPrev">‹</button><input id="tsD" type="date" value="${esc(S.ts.date)}" class="grow"><button id="tsNext">›</button></div>
       ${S.ts.worker?`<label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin-top:10px"><input type="checkbox" id="tsOC" style="width:auto" ${oc?"checked":""}> On call ${esc(dayName(S.ts.date))}</label>
@@ -1278,7 +1518,7 @@ function viewTimesheet(){
       <div class="ft"><span style="width:42%">Timesheet</span><span style="width:30%">Ver. 2</span><span>timsh doc:1</span></div>
     </div></div>
     ${rows.length?`<h2><span>Entries (tap to edit)</span></h2><div class="card" style="padding:2px 14px">${rows.map(({j,e,free})=>`<div class="list-item" ${free?`data-h="${esc(e.id)}"`:`data-j="${esc(j.id)}"`}><div class="grow">${j.jobNo?`<b>#${esc(j.jobNo)}</b> `:""}${esc(j.customer)}${free?` <span class="pill done">No job card</span>`:""}<div class="mute">${esc(e.start)}–${esc(e.finish)} ${lunchMinFor(e)?`· lunch ${lunchMinFor(e)}m off`:""}</div></div><div class="num">${hrs(netHrs(e))} h</div></div>`).join("")}</div>`
-      : `<div class="empty">No hours recorded for ${esc(S.ts.worker||"this person")} on ${fmtD(S.ts.date)}.<br>Hours added on job cards show up here, or tap <b>+ Add hours</b>.</div>`}`;
+      : `<div class="empty">No hours recorded for ${esc(S.ts.worker||"this person")} on ${fmtD(S.ts.date)}.<br>${tsOnlyMe()?"Tap <b>+ Add hours</b> to put in your hours for each job.":"Hours added on job cards show up here, or tap <b>+ Add hours</b>."}</div>`}`;
   const setD = d => { S.ts.date = d; viewTimesheet(); };
   if($("#tsW")) $("#tsW").onchange = e => { S.ts.worker = e.target.value; viewTimesheet(); };
   $("#tsD").onchange = e => e.target.value && setD(e.target.value);
@@ -1293,7 +1533,7 @@ function viewTimesheet(){
     $("#tsDl").onclick = () => downloadPDF(timesheetPDF(S.ts.worker, S.ts.date));
     $("#tsDrive").onclick = e => drivePDF(e.currentTarget, timesheetPDF(S.ts.worker, S.ts.date), S.ts.worker);
   }
-  document.querySelectorAll("[data-j]").forEach(el => el.onclick = () => { S.view="jobs"; S.jobId=el.dataset.j; render(true); });
+  document.querySelectorAll("[data-j]").forEach(el => el.onclick = () => { if(tsOnlyMe()){ toast("That entry is on a job card – ask the office to change it."); return; } S.view="jobs"; S.jobId=el.dataset.j; render(true); });
   document.querySelectorAll("[data-h]").forEach(el => el.onclick = () => editHours((S.hours||[]).find(h=>h.id===el.dataset.h)));
   if($("#tsAdd")) $("#tsAdd").onclick = () => editHours(null);
 }
@@ -1690,16 +1930,166 @@ function importDialog(){
   };
 }
 
+/* ---------- Push notifications (timesheet reminders) ---------- */
+const FB_VER = "10.12.2";
+function fcmCfg(){ try { return S.settings.fcmConfig ? JSON.parse(S.settings.fcmConfig) : null; } catch(e){ return null; } }
+function isStandalone(){ return (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true; }
+function isIOS(){ return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1); }
+function pushWhyNot(){
+  if(window.google && google.script && google.script.run) return "Reminders only work in the app installed from the GitHub link, not the Google link.";
+  if(isIOS() && !isStandalone()) return "On iPhone, add the app to your Home Screen first (Share → Add to Home Screen), open it from there, then turn reminders on. Needs iOS 16.4 or newer.";
+  if(!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return "This phone or browser can't receive app notifications. On Android use Chrome; on iPhone add the app to the Home Screen.";
+  return "";
+}
+function deviceName(){
+  const u = navigator.userAgent;
+  const os = /iPhone/.test(u) ? "iPhone" : /iPad/.test(u) ? "iPad" : /Android/.test(u) ? "Android" : /Windows/.test(u) ? "Windows" : /Mac/.test(u) ? "Mac" : "Device";
+  const br = /SamsungBrowser/.test(u) ? "Samsung Internet" : /EdgA?\//.test(u) ? "Edge" : /CriOS|Chrome\//.test(u) ? "Chrome" : /Firefox|FxiOS/.test(u) ? "Firefox" : /Safari/.test(u) ? "Safari" : "";
+  return os + (br ? " · " + br : "");
+}
+function loadScript(src){ return new Promise((ok, bad) => { if(document.querySelector(`script[src="${src}"]`)) return ok(); const s=document.createElement("script"); s.src=src; s.onload=ok; s.onerror=()=>bad({code:"unavailable", message:"Couldn't load the notification tool – check your connection."}); document.head.appendChild(s); }); }
+async function fbMessaging(){
+  if(!window.firebase || !firebase.messaging){
+    await loadScript(`https://www.gstatic.com/firebasejs/${FB_VER}/firebase-app-compat.js`);
+    await loadScript(`https://www.gstatic.com/firebasejs/${FB_VER}/firebase-messaging-compat.js`);
+  }
+  if(!firebase.apps.length) firebase.initializeApp(fcmCfg());
+  return firebase.messaging();
+}
+async function getPushToken(){
+  const reg = await navigator.serviceWorker.ready;
+  const m = await fbMessaging();
+  return m.getToken({vapidKey: S.settings.fcmVapid, serviceWorkerRegistration: reg});
+}
+async function pushEnable(){
+  const why = pushWhyNot(); if(why) throw {code:"bad", message:why};
+  if(!fcmCfg() || !S.settings.fcmVapid) throw {code:"bad", message:"Your admin hasn't set up reminders yet."};
+  const perm = await Notification.requestPermission();
+  if(perm !== "granted") throw {code:"bad", message:"Notifications are blocked for this app. Allow them in your phone's settings for this app (or the browser's site settings), then try again."};
+  const token = await getPushToken();
+  if(!token) throw {code:"bad", message:"Couldn't register this phone – try again."};
+  await call("pushToken", {token, device: deviceName(), on: true});
+  lsSet("pushToken", token);
+}
+async function pushDisable(){
+  const token = lsGet("pushToken");
+  if(token){ try { await call("pushToken", {token, on:false}); } catch(e){} try { (await fbMessaging()).deleteToken(); } catch(e){} }
+  lsSet("pushToken", null);
+}
+/* on every start: keep this phone's token current (Firebase can rotate it) */
+async function pushRefresh(){
+  try {
+    const old = lsGet("pushToken");
+    if(!old || pushWhyNot() || !fcmCfg() || Notification.permission !== "granted") return;
+    const token = await getPushToken();
+    if(token && token !== old){ await call("pushToken", {token, device: deviceName(), on:true}); await call("pushToken", {token: old, on:false}); lsSet("pushToken", token); }
+  } catch(e){ console.warn("push refresh", e); }
+}
+function pushOnHere(){ return !!lsGet("pushToken") && ("Notification" in window) && Notification.permission === "granted"; }
+
+function phoneCardHTML(){
+  const why = pushWhyNot(), ready = fcmCfg() && S.settings.fcmVapid, on = pushOnHere();
+  const blocked = ("Notification" in window) && Notification.permission === "denied";
+  let inner;
+  if(why) inner = `<div class="mute">${esc(why)}</div>`;
+  else if(!ready) inner = `<div class="mute">Not available yet – your admin needs to set up reminders first.</div>`;
+  else if(on) inner = `<div><b style="color:var(--ok,#2e7d32)">On ✓</b> <span class="mute">– you'll get a reminder if your timesheet isn't done${S.settings.reminderOn?` (${esc(S.settings.reminderTime)})`:""}.</span></div>
+      <div class="row" style="gap:6px;margin-top:10px"><button id="pTest" style="flex:1">Send a test</button><button id="pOff" class="ghost danger" style="flex:1">Turn off</button></div>`;
+  else inner = `${blocked?`<div class="mute" style="color:var(--warn)">Notifications are blocked for this app – allow them in your phone's settings first.</div>`:`<div class="mute">Get a notification if you haven't done your timesheet for the day.</div>`}
+      <button class="pri" id="pOn" style="width:100%;margin-top:10px">Turn on reminders</button>`;
+  return `<h2><span>Reminders on this phone</span></h2><div class="card">${inner}</div>`;
+}
+function bindPhoneCard(){
+  if($("#pOn")) $("#pOn").onclick = async e => { try { await busy(e.currentTarget, "Turning on…", pushEnable); toast("Reminders on for this phone"); viewSettings(); } catch(err){ writeErr(err); } };
+  if($("#pOff")) $("#pOff").onclick = async e => { await busy(e.currentTarget, "…", pushDisable); toast("Reminders off for this phone"); viewSettings(); };
+  if($("#pTest")) $("#pTest").onclick = async e => {
+    try { const r = await busy(e.currentTarget, "Sending…", () => call("pushTest"));
+      if(r.noDevice){ lsSet("pushToken", null); toast("This phone isn't registered any more – turn reminders on again."); viewSettings(); }
+      else toast(r.sent ? "Test sent – it should pop up in a few seconds" : "Couldn't send: " + ((r.errors||[])[0] || "unknown error"));
+    } catch(err){ writeErr(err); } };
+}
+
+const RDAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+function reminderCardHTML(){
+  const s = S.settings, p = S.push || {}, days = String(s.reminderDays||"").split(",").map(Number);
+  const lab = 'style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin-top:10px"';
+  const names = [...new Set((p.devices||[]).map(d=>d.name))];
+  const last = p.last;
+  return `<h2><span>Timesheet reminders</span></h2>
+    <div class="card">
+      ${p.error==="needs-auth" ? `<div class="mute" style="color:var(--warn)">One more permission is needed: in Apps Script run <b>setup</b> once and click Allow, then redeploy.</div>` :
+        p.ready ? `<div class="mute">Firebase connected ✓ · ${names.length ? `${names.length} ${names.length===1?"person has":"people have"} reminders on: ${esc(names.join(", "))}` : "nobody has turned reminders on yet"}.</div>
+          <button class="ghost" id="pSetup" style="padding:4px 0">Change Firebase setup…</button>`
+        : `<div class="mute">Push notifications need a free Firebase project – see <b>Part A3</b> of the guide, then tap below.</div><button class="pri" id="pSetup" style="width:100%;margin-top:8px">Set up Firebase…</button>`}
+      <label ${lab}><input type="checkbox" id="rOn" style="width:auto" ${s.reminderOn?"checked":""}> Remind workers at</label>
+      <input type="time" id="rTime" value="${esc(s.reminderTime||"17:00")}">
+      <label>On these days</label>
+      <div class="row" style="gap:4px;flex-wrap:wrap">${RDAYS.map((d,i)=>`<label class="chip" style="display:flex;gap:4px;align-items:center;margin:0;text-transform:none;font-size:14px;color:var(--ink);font-weight:400;border:1px solid var(--line,#ddd);border-radius:16px;padding:4px 10px"><input type="checkbox" data-day="${i+1}" style="width:auto;margin:0" ${days.includes(i+1)?"checked":""}>${d}</label>`).join("")}</div>
+      <label>Who gets reminded</label>
+      <select id="rRule"><option value="sent" ${s.reminderRule!=="hours"?"selected":""}>Anyone who hasn't emailed today's timesheet</option><option value="hours" ${s.reminderRule==="hours"?"selected":""}>Anyone with no hours logged today</option></select>
+      <label ${lab}><input type="checkbox" id="rSum" style="width:auto" ${s.summaryOn?"checked":""}> Send admins a list of who's missing at</label>
+      <input type="time" id="rSumT" value="${esc(s.summaryTime||"17:30")}">
+      <div class="mute" style="margin-top:6px">Tap <b>Save settings</b> at the bottom to apply. Reminders arrive within 15 minutes of the time. Each person turns them on for their own phone in Settings.</div>
+      ${last?`<div class="mute" style="margin-top:6px">Last sent ${esc(last.at)}${last.reminders?`: reminded ${esc(last.reminders.sent.join(", ")||"nobody")}`:""}${last.summary?` · summary listed ${esc(last.summary.missing.join(", ")||"nobody")}`:""}.</div>`:""}
+      ${p.ready?`<button id="pNow" style="width:100%;margin-top:8px">Send reminders now (test)</button>`:""}
+    </div>`;
+}
+function readReminderSettings(){
+  if(!$("#rOn")) return {};
+  return { reminderOn: $("#rOn").checked, reminderTime: $("#rTime").value || "17:00",
+    reminderDays: [...document.querySelectorAll("[data-day]")].filter(x=>x.checked).map(x=>x.dataset.day).join(","),
+    reminderRule: $("#rRule").value, summaryOn: $("#rSum").checked, summaryTime: $("#rSumT").value || "17:30" };
+}
+function bindReminderCard(){
+  if($("#pSetup")) $("#pSetup").onclick = pushSetupDialog;
+  if($("#pNow")) $("#pNow").onclick = async e => {
+    try { const r = await busy(e.currentTarget, "Sending…", () => call("pushRemindNow"));
+      toast(r.missing.length ? `Not done: ${r.missing.join(", ")}. Reminded: ${r.sent.join(", ") || "nobody (no phones signed up)"}` : "Everyone's timesheet is done – nobody to remind");
+    } catch(err){ writeErr(err); } };
+}
+function pushSetupDialog(){
+  const cfg = fcmCfg();
+  openModal(`<h3>Set up Firebase</h3>
+    <p class="mute">Copy these from your Firebase project – Part A3 of the guide shows where each one is.</p>
+    <label>1. Web app config (the whole <i>firebaseConfig</i> block)</label>
+    <textarea id="fbCfg" rows="6" placeholder='const firebaseConfig = { apiKey: "…", projectId: "…", messagingSenderId: "…", appId: "…" };'>${cfg?esc(JSON.stringify(cfg,null,1)):""}</textarea>
+    <label>2. Web Push key (Cloud Messaging → Web Push certificates → Key pair)</label>
+    <input id="fbVap" value="${esc(S.settings.fcmVapid||"")}" autocapitalize="off" autocomplete="off">
+    <label>3. Service account key (.json file)</label>
+    ${S.push && S.push.hasKey ? `<div class="mute">A key is saved ✓ – only choose a file to replace it.</div>` : ""}
+    <input type="file" id="fbKey" accept=".json,application/json">
+    <div class="mute" style="margin-top:6px">The key file is stored privately in your Apps Script, not in the sheet or on phones. Delete the downloaded copy afterwards.</div>
+    <div class="actions"><button id="mCancel">Cancel</button><button class="pri" id="fbSave">Save &amp; test</button></div>`);
+  $("#mCancel").onclick = closeModal;
+  $("#fbSave").onclick = async e => {
+    const btn = e.currentTarget, f = $("#fbKey").files[0];
+    const p = { config: $("#fbCfg").value, vapid: $("#fbVap").value, key: f ? await f.text() : "" };
+    try { S.push = await busy(btn, "Checking…", () => call("pushSetup", p)); closeModal(); toast("Firebase connected ✓"); await loadAll(true); viewSettings(); }
+    catch(err){ writeErr(err); }
+  };
+}
+/* tapping a notification opens the timesheet */
+function goFromUrl(){
+  const q = new URLSearchParams(location.search);
+  if(q.get("go")==="timesheet"){ S.view="timesheet"; S.jobId=null; S.ts.worker = S.me.name; S.ts.date = today(); history.replaceState(null, "", location.pathname); }
+}
+if("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => {
+  if(e.data && e.data.go==="timesheet" && S.me){ S.view="timesheet"; S.jobId=null; S.ts.worker=S.me.name; S.ts.date=today(); render(true); }
+});
+
 /* ---------- SETTINGS ---------- */
 function viewSettings(){
   $("#title").textContent = "Settings";
   const s = S.settings;
-  const me = `<div class="card"><div class="row"><div class="grow">Signed in as <b>${esc(S.me && S.me.name)}</b>${S.isAdmin?` <span class="pill">Admin</span>`:""}</div><button id="sOut">Sign out</button></div></div>`;
+  const me = `<div class="card"><div class="row"><div class="grow">Signed in as <b>${esc(S.me && S.me.name)}</b>${S.isAdmin?` <span class="pill">Admin</span>`:""}</div><button id="sPin" class="ghost">Change PIN</button><button id="sOut">Sign out</button></div></div>`;
   if(!S.isAdmin){
-    $("#main").innerHTML = me + `<div class="card"><div class="mute">Timesheets are emailed to</div><div><b>${esc(s.adminEmail||"(not set)")}</b></div><p class="mute">Only an admin can change settings, workers and PINs.</p></div>`;
-    $("#sOut").onclick = signOut; return;
+    $("#main").innerHTML = me + `<div class="card"><div class="mute">Timesheets are emailed to</div><div><b>${esc(s.adminEmail||"(not set)")}</b></div><p class="mute">Only an admin can change settings, workers and PINs.</p></div>` + verLine() + phoneCardHTML();
+    $("#sOut").onclick = signOut; $("#sPin").onclick = () => choosePin(false); bindPhoneCard(); return;
   }
-  $("#main").innerHTML = me + `
+  $("#main").innerHTML = me + verLine() + `
+    ${phoneCardHTML()}
+    ${reminderCardHTML()}
+    ${ordersCardHTML()}
     <h2><span>Email</span></h2>
     <div class="card">
       <label style="margin-top:0">Send timesheets to</label><input id="sAdm" type="email" value="${esc(s.adminEmail)}">
@@ -1710,11 +2100,15 @@ function viewSettings(){
     </div>
     <h2><span>Job settings</span></h2>
     <div class="card"><label style="margin-top:0">Business name</label><input id="sCo" value="${esc(s.company)}">
+    <label>App access code</label><input id="sAc" value="${esc(s.accessCode||"jones1898")}" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <div class="mute">Typed once on each phone before the list of names shows. If you change it, everyone types the new one next time they open the app.</div>
     <div class="grid2"><div><label>Usual lunch start</label><input id="sLuS" type="time" value="${esc(s.lunchStart||"12:00")}"></div><div><label>Usual lunch finish</label><input id="sLuF" type="time" value="${esc(s.lunchFinish||"12:30")}"></div></div>
     <label>Ordinary hours per week (overtime after this)</label><input id="sOrd" type="number" inputmode="decimal" min="0" step="0.5" value="${esc(s.ordinaryHours||38)}">
     <div class="mute" style="margin-top:6px">Filled in for each person's day – they change it if lunch was different, or tick "No lunch taken".</div>
     <label>Usual supplier</label><input id="sSup" value="${esc(s.supplier||"")}" placeholder="Pre-selected when adding materials">
-    <label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400"><input type="checkbox" id="sPr" style="width:auto" ${s.showPrices?"checked":""}> Show prices</label></div>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400"><input type="checkbox" id="sPr" style="width:auto" ${s.showPrices?"checked":""}> Show prices</label>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400"><input type="checkbox" id="sTso" style="width:auto" ${s.tsOnly?"checked":""}> Timesheets only for workers</label>
+    <div class="mute">Workers (not admins) only see Timesheet and Settings, and type in their own hours by job number. Admins still see jobs, products and everyone's timesheets.</div></div>
     <h2><span>Workers</span><button class="ghost" id="addW">+ Add</button></h2>
     ${(s.workers||[]).map((w,i)=>`<div class="card" data-w="${i}">
       <div class="grid2"><div><label style="margin-top:0">Name</label><input value="${esc(w.name)}" data-f="name"></div><div><label style="margin-top:0">Vehicle rego</label><input value="${esc(w.rego)}" data-f="rego" style="text-transform:uppercase"></div></div>
@@ -1723,7 +2117,8 @@ function viewSettings(){
       <div><label>&nbsp;</label><label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin:0;padding:9px 0"><input type="checkbox" data-f="admin" style="width:auto" ${w.admin?"checked":""}> Admin</label></div></div>
       <div style="text-align:right"><button class="ghost danger" data-del="${i}">Remove</button></div></div>`).join("") || `<div class="card mute">No workers yet.</div>`}
     <div class="actions"><button class="pri" id="sSave">Save settings</button></div>`;
-  $("#sOut").onclick = signOut;
+  $("#sOut").onclick = signOut; $("#sPin").onclick = () => choosePin(false);
+  bindOrdersCard(); bindPhoneCard(); bindReminderCard();
   $("#addW").onclick = () => { const st=collectSettings(); st.workers.push({name:"",rego:"",email:"",pin:"",admin:false}); S.settings=st; viewSettings(); };
   document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{ const st=collectSettings(); st.workers.splice(Number(b.dataset.del),1); S.settings=st; viewSettings(); });
   $("#sSave").onclick = async () => {
@@ -1739,8 +2134,8 @@ function collectSettings(){
   const ws=[...document.querySelectorAll("[data-w]")].map(r=>({name:r.querySelector('[data-f=name]').value.trim(), rego:r.querySelector('[data-f=rego]').value.trim().toUpperCase(),
     email:r.querySelector('[data-f=email]').value.trim(), pin:r.querySelector('[data-f=pin]').value.trim(), admin:r.querySelector('[data-f=admin]').checked}));
   const luS = $("#sLuS").value || "12:00", luF = $("#sLuF").value || "12:30";
-  return {company:$("#sCo").value.trim(), lunchStart:luS, lunchFinish:luF, lunch:Math.max(0, (mins(luF)||0)-(mins(luS)||0)), ordinaryHours:Number($("#sOrd").value)||38, supplier:$("#sSup").value.trim(),
-    adminEmail:$("#sAdm").value.trim(), jobEmail:$("#sJob").value.trim(), fromAlias:$("#sFrom").value.trim(), ccWorker:$("#sCc").checked, showPrices:$("#sPr").checked, workers:ws};
+  return Object.assign({fcmConfig:S.settings.fcmConfig||"", fcmVapid:S.settings.fcmVapid||""}, {company:$("#sCo").value.trim(), accessCode:($("#sAc") && $("#sAc").value.trim()) || S.settings.accessCode || "jones1898", lunchStart:luS, lunchFinish:luF, lunch:Math.max(0, (mins(luF)||0)-(mins(luS)||0)), ordinaryHours:Number($("#sOrd").value)||38, supplier:$("#sSup").value.trim(),
+    adminEmail:$("#sAdm").value.trim(), jobEmail:$("#sJob").value.trim(), fromAlias:$("#sFrom").value.trim(), ccWorker:$("#sCc").checked, showPrices:$("#sPr").checked, tsOnly:$("#sTso").checked, emailQuery: ($("#oQ") && $("#oQ").value.trim()) || S.settings.emailQuery || "", workers:ws}, readReminderSettings());
 }
 
 </script>
