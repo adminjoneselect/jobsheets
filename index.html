@@ -79,6 +79,7 @@ table.wk td[data-d]{cursor:pointer}
 .tsPaper .tt{font-weight:bold;font-style:italic;font-size:17px;margin-bottom:4px}
 .tsPaper table{border-collapse:collapse;width:100%;table-layout:fixed}
 .tsPaper td,.tsPaper th{border:1px solid #000;padding:2px 5px;height:26px;font-size:13px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.tsPaper td.wrap{white-space:normal;font-size:11.5px;line-height:1.1;text-overflow:clip}
 .tsPaper th{font-weight:normal;font-size:13px;height:36px;line-height:1.1}
 .tsPaper .ft{display:flex;font-weight:bold;font-style:italic;font-size:15px;margin-top:4px}
 .mat-total{display:flex;justify-content:space-between;padding-top:8px;font-weight:700}
@@ -124,7 +125,7 @@ const money = n => "$" + (Number(n)||0).toLocaleString("en-AU",{minimumFractionD
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 const clone = o => JSON.parse(JSON.stringify(o ?? null));
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),2400); }
-const APP_VERSION = "2026.11.13.2";   // must match APP_VERSION in Code.gs
+const APP_VERSION = "2026.11.14.1";   // must match APP_VERSION in Code.gs
 const verNum = v => String(v||"0").split(".").map(n=>parseInt(n,10)||0);
 const verCmp = (a,b) => { const x=verNum(a), y=verNum(b); for(let i=0;i<Math.max(x.length,y.length);i++){ const d=(x[i]||0)-(y[i]||0); if(d) return d; } return 0; };
 /* compare this page with the Google script after each load */
@@ -445,7 +446,7 @@ function viewJob(){
       <div class="list-item" data-i="${e.i}">
         <div class="grow"><div><b>${fmtD(e.date)}</b> · ${esc(e.worker||"")}${e.wip?` <span class="pill wip">WIP</span>`:""}</div>
         <div class="mute num">${esc(e.start||"--")}–${esc(e.finish||"--")}${lunchMinFor(e)?` · lunch ${lunchMinFor(e)}m off`:""}${e.rego?` · ${esc(e.rego)}`:""}</div>
-        ${e.desc?`<div style="font-size:14px;white-space:pre-wrap">${esc(e.desc)}</div>`:""}</div>
+        ${descFull(e)?`<div style="font-size:14px;white-space:pre-wrap">${esc(descFull(e))}</div>`:""}</div>
         <div class="num" style="font-weight:700">${hrs(netHrs(e))} h</div>
       </div>`).join("") : `<div class="empty" style="padding:16px">No labour recorded yet.</div>`}</div>
     <h2><span>Materials · ${mats.length}</span><button class="ghost" id="addMat">+ Add item</button></h2>
@@ -521,7 +522,7 @@ function regoFor(name){ const w=(S.settings.workers||[]).find(w=>w.name===name);
 function editLabour(job, idx){
   const isNew = idx==null;
   const defWorker = (S.me && S.me.name) || "";
-  const e = isNew ? {date:today(), worker:defWorker, start:"07:00", finish:"15:30", lunch:0, rego:regoFor(defWorker), wip:job.status!=="complete", desc:""} : clone(job.labour[idx]);
+  const e = isNew ? {date:today(), worker:defWorker, start:"07:00", finish:"15:30", lunch:0, rego:regoFor(defWorker), wip:job.status!=="complete", desc:"", ioa:false, comment:""} : clone(job.labour[idx]);
   const noWorkers = !(S.settings.workers||[]).length;
   openModal(`<h3>${isNew?"Add labour":"Edit labour"} – #${esc(job.jobNo)}</h3>
     <div class="grid2"><div><label>Date</label><input id="lDate" type="date" value="${esc(e.date)}"></div>
@@ -532,6 +533,7 @@ function editLabour(job, idx){
     <div class="grid2"><div><label>Vehicle rego</label><input id="lRego" value="${esc(e.rego)}" style="text-transform:uppercase"></div>
     <div><label>&nbsp;</label><label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin:0;padding:9px 0"><input type="checkbox" id="lWip" style="width:auto" ${e.wip?"checked":""}> Job still in progress (WIP)</label></div></div>
     <label>What was done</label><textarea id="lDesc" placeholder="e.g. Rough-in kitchen, ran circuits to switchboard">${esc(e.desc)}</textarea>
+    ${extrasHTML(e, "l")}
     <div class="mute" id="lHrs" style="margin-top:8px"></div>
     <div class="actions">${isNew?"":`<button class="danger" id="lDel" style="margin-right:auto">Delete</button>`}<button id="mCancel">Cancel</button><button class="pri" id="mSave">Save</button></div>`);
   const wSel = $("#lWorker"), wT = $("#lWorkerT");
@@ -548,7 +550,7 @@ function editLabour(job, idx){
     const worker = (!wSel || wSel.value==="__new") ? wT.value.trim() : wSel.value;
     const L = readLunch();
     const ne = {date:$("#lDate").value, worker, start:$("#lStart").value, finish:$("#lFin").value, lunch:0,
-      rego:$("#lRego").value.trim().toUpperCase(), wip:$("#lWip").checked, desc:$("#lDesc").value.trim()};
+      rego:$("#lRego").value.trim().toUpperCase(), wip:$("#lWip").checked, desc:$("#lDesc").value.trim(), ioa:$("#lIoa").checked, comment:$("#lCom").value.trim()};
     if(!ne.date || !ne.worker){ toast("Date and worker are needed."); return; }
     if(!ne.start || !ne.finish){ toast("Enter start and finish times."); return; }
     if(!L.none && (!L.start || !L.finish)){ toast("Enter lunch start and finish, or tick No lunch taken."); return; }
@@ -1269,7 +1271,7 @@ function weekPDF(start){
       y += 5;
       doc.text(`${dayName(d).slice(0,3)} ${fmtDAU(d).slice(0,5)}`, X, y);
       doc.text(fitText(doc, `${j.jobNo?"#"+j.jobNo+"  ":""}${j.customer||""}`, 70), X+22, y);
-      doc.text(fitText(doc, e.desc||"", 110), X+95, y);
+      doc.text(fitText(doc, descFull(e), 110), X+95, y);
       doc.text(`${e.start||""}–${e.finish||""}${lunchMinFor(e)?`  (lunch ${lunchMinFor(e)}m)`:""}`, X+208, y);
       doc.text(hrs(netHrs(e))+" h", X+W, y, {align:"right"});
     });
@@ -1411,7 +1413,7 @@ function editHours(h){
   const isNew = !h;
   const worker = isNew ? S.ts.worker : h.worker;
   const e = isNew ? {id:uid(), date:S.ts.date, worker, start:"07:00", finish:"15:30", lunch:0,
-                     rego:regoFor(worker), wip:false, desc:"", jobNo:"", customer:""} : clone(h);
+                     rego:regoFor(worker), wip:false, desc:"", jobNo:"", customer:"", ioa:false, comment:""} : clone(h);
   const open = S.jobs.filter(j=>j.status!=="complete").sort((a,b)=>String(b.jobNo).localeCompare(String(a.jobNo),undefined,{numeric:true}));
   openModal(`<h3>${isNew?"Add hours":"Edit hours"} – ${esc(worker)}</h3><div class="mute">${fmtD(e.date)}</div>
     ${isNew && !tsOnlyMe()?`<label>Job</label><select id="hJob"><option value="">Not on a job card – type it in below</option>${open.map(j=>`<option value="${esc(j.id)}">#${esc(j.jobNo)} · ${esc(j.customer)}</option>`).join("")}</select>`:""}
@@ -1423,6 +1425,7 @@ function editHours(h){
     <div class="grid2"><div><label>Vehicle rego</label><input id="hR" value="${esc(e.rego)}" style="text-transform:uppercase"></div>
     <div><label>&nbsp;</label><label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin:0;padding:9px 0"><input type="checkbox" id="hW" style="width:auto" ${e.wip?"checked":""}> WIP</label></div></div>
     <label>Job Description / Location</label><textarea id="hD" placeholder="e.g. Shed Time, Gippsland Water Factory, Superior, Ect">${esc(e.desc)}</textarea>
+    ${extrasHTML(e, "h")}
     <div class="mute" id="hHrs" style="margin-top:8px"></div>
     <div class="actions">${isNew?"":`<button class="danger" id="hDel" style="margin-right:auto">Delete</button>`}<button id="mCancel">Cancel</button><button class="pri" id="hSave">Save</button></div>`);
   const upd = () => { const x={start:$("#hS").value, finish:$("#hF").value}; const L = readLunch(); const lm = overlapWith(x, L);
@@ -1435,7 +1438,7 @@ function editHours(h){
   $("#hSave").onclick = async () => {
     const L = readLunch();
     const ne = {date:e.date, worker, start:$("#hS").value, finish:$("#hF").value, lunch:0,
-                rego:$("#hR").value.trim().toUpperCase(), wip:$("#hW").checked, desc:$("#hD").value.trim()};
+                rego:$("#hR").value.trim().toUpperCase(), wip:$("#hW").checked, desc:$("#hD").value.trim(), ioa:$("#hIoa").checked, comment:$("#hCom").value.trim()};
     if(!ne.start || !ne.finish){ toast("Enter start and finish times."); return; }
     if(!L.none && (!L.start || !L.finish)){ toast("Enter lunch start and finish, or tick No lunch taken."); return; }
     ne.lunch = overlapWith(ne, L);
@@ -1463,6 +1466,11 @@ function knownJobs(){
   (S.hours||[]).forEach(h => add(h.jobNo, h.customer, h.date));
   return [...m.values()].sort((a,b)=>b.d.localeCompare(a.d)).slice(0,60);
 }
+/* description as printed: what was done + IOA ALLOWANCE + comments, e.g. "Switchboard upgrade – IOA ALLOWANCE – EBA site" */
+function descFull(e, base){ return [base !== undefined ? base : (e.desc||""), e.ioa ? "IOA ALLOWANCE" : "", String(e.comment||"").trim()].filter(Boolean).join(" – "); }
+const extrasHTML = (e, p) => `<label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin:10px 0 0"><input type="checkbox" id="${p}Ioa" style="width:auto" ${e.ioa?"checked":""}> IOA Allowance</label>
+    <label>Comments</label><input id="${p}Com" value="${esc(e.comment||"")}" placeholder="e.g. EBA site, etc.">
+    <div class="mute" style="font-size:12px;margin-top:4px">IOA and comments are added to the description on the timesheet.</div>`;
 function tsRows(worker, date){
   const rows = [];
   for(const j of S.jobs) for(const e of (j.labour||[])) if(e.worker===worker && e.date===date) rows.push({j, e});
@@ -1472,7 +1480,7 @@ function tsRows(worker, date){
 }
 function tsLines(worker, date){
   const rows = tsRows(worker, date);
-  const lines = rows.map(({j,e}) => ({jobNo:j.jobNo, cust:j.customer, desc:e.desc||j.desc||"", start:e.start, finish:e.finish, rego:e.rego||"", wip:e.wip?"WIP":"", hours:hrs(grossMin(e)/60)}));
+  const lines = rows.map(({j,e}) => ({jobNo:j.jobNo, cust:j.customer, desc:descFull(e, e.desc||j.desc||""), start:e.start, finish:e.finish, rego:e.rego||"", wip:e.wip?"WIP":"", hours:hrs(grossMin(e)/60)}));
   const lunch = rows.reduce((s,r)=>s+lunchMinFor(r.e),0);
   const total = rows.reduce((s,r)=>s+netHrs(r.e),0);
   const LB = lunchFor(worker, date);
@@ -1512,12 +1520,12 @@ function viewTimesheet(){
     <div class="tsWrap"><div class="tsPaper">
       <table><colgroup>${TS_COLS.map(c=>`<col style="width:${(c[1]/tw*100).toFixed(2)}%">`).join("")}</colgroup>
       <tr>${TS_COLS.map(c=>`<th>${c[0]}</th>`).join("")}</tr>
-      ${L.map(l=>`<tr>${TS_COLS.map(c=>`<td style="${c[2]==="hours"||c[2]==="start"||c[2]==="finish"||c[2]==="wip"?"text-align:center;":""}${l.bold?"font-weight:bold;":""}">${esc(l[c[2]]||"")}</td>`).join("")}</tr>`).join("")}
+      ${L.map(l=>`<tr>${TS_COLS.map(c=>`<td class="${(c[2]==="desc"||c[2]==="cust") && String(l[c[2]]||"").length>(c[2]==="desc"?34:16)?"wrap":""}" style="${c[2]==="hours"||c[2]==="start"||c[2]==="finish"||c[2]==="wip"?"text-align:center;":""}${l.bold?"font-weight:bold;":""}">${esc(l[c[2]]||"")}</td>`).join("")}</tr>`).join("")}
       <tr><td><b>NAME:</b></td><td>${esc(S.ts.worker)}</td><td><b>DAY:</b> ${esc(dayName(S.ts.date))}</td><td></td><td></td><td></td><td><b>DATE</b></td><td>${fmtDAU(S.ts.date)}</td></tr>
       </table>
       <div class="ft"><span style="width:42%">Timesheet</span><span style="width:30%">Ver. 2</span><span>timsh doc:1</span></div>
     </div></div>
-    ${rows.length?`<h2><span>Entries (tap to edit)</span></h2><div class="card" style="padding:2px 14px">${rows.map(({j,e,free})=>`<div class="list-item" ${free?`data-h="${esc(e.id)}"`:`data-j="${esc(j.id)}"`}><div class="grow">${j.jobNo?`<b>#${esc(j.jobNo)}</b> `:""}${esc(j.customer)}${free?` <span class="pill done">No job card</span>`:""}<div class="mute">${esc(e.start)}–${esc(e.finish)} ${lunchMinFor(e)?`· lunch ${lunchMinFor(e)}m off`:""}</div></div><div class="num">${hrs(netHrs(e))} h</div></div>`).join("")}</div>`
+    ${rows.length?`<h2><span>Entries (tap to edit)</span></h2><div class="card" style="padding:2px 14px">${rows.map(({j,e,free})=>`<div class="list-item" ${free?`data-h="${esc(e.id)}"`:`data-j="${esc(j.id)}"`}><div class="grow">${j.jobNo?`<b>#${esc(j.jobNo)}</b> `:""}${esc(j.customer)}${free?` <span class="pill done">No job card</span>`:""}${e.ioa?` <span class="pill">IOA</span>`:""}<div class="mute">${esc(e.start)}–${esc(e.finish)} ${lunchMinFor(e)?`· lunch ${lunchMinFor(e)}m off`:""}</div></div><div class="num">${hrs(netHrs(e))} h</div></div>`).join("")}</div>`
       : `<div class="empty">No hours recorded for ${esc(S.ts.worker||"this person")} on ${fmtD(S.ts.date)}.<br>${tsOnlyMe()?"Tap <b>+ Add hours</b> to put in your hours for each job.":"Hours added on job cards show up here, or tap <b>+ Add hours</b>."}</div>`}`;
   const setD = d => { S.ts.date = d; viewTimesheet(); };
   if($("#tsW")) $("#tsW").onchange = e => { S.ts.worker = e.target.value; viewTimesheet(); };
@@ -1598,7 +1606,13 @@ function timesheetPDF(worker, date){
       if(l){
         doc.setFont("times", l.bold?"bold":"normal"); doc.setFontSize(12);
         TS_COLS.forEach((c,i)=>{ const v=l[c[2]]; if(!v) return; const centre=["start","finish","wip","hours","jobNo"].includes(c[2]);
-          let fs=12; doc.setFontSize(fs); while(doc.getTextWidth(String(v))>cw[i]-3 && fs>8){ fs-=0.5; doc.setFontSize(fs); }
+          let fs=12; doc.setFontSize(fs); while(doc.getTextWidth(String(v))>cw[i]-3 && fs>10){ fs-=0.5; doc.setFontSize(fs); }
+          if(!centre && doc.getTextWidth(String(v))>cw[i]-3){      // long description (e.g. with IOA ALLOWANCE + comments): two lines
+            fs=10; doc.setFontSize(fs); let two=doc.splitTextToSize(String(v), cw[i]-3);
+            while(two.length>2 && fs>7.5){ fs-=0.5; doc.setFontSize(fs); two=doc.splitTextToSize(String(v), cw[i]-3); }
+            if(two.length>2) two=[two[0], fitText(doc, two.slice(1).join(" "), cw[i]-3)];
+            if(two.length===2){ doc.text(two[0], cx[i]+2, y+rowH/2-1.2); doc.text(two[1], cx[i]+2, y+rowH/2+3.4); return; }
+          }
           const s=fitText(doc, v, cw[i]-3); centre ? doc.text(s, cx[i]+cw[i]/2, y+rowH/2+1.6, {align:"center"}) : doc.text(s, cx[i]+2, y+rowH/2+1.6); });
       }
       y += rowH;
@@ -1656,7 +1670,7 @@ function jobCardPDF(j){
   doc.setFont("helvetica","normal"); doc.setFontSize(9.5);
   const labLines = [];
   (j.labour||[]).slice().sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start)).forEach(e=>{
-    const d = e.desc ? doc.splitTextToSize(e.desc, LC[3][1]-3) : [""];
+    const dd = descFull(e), d = dd ? doc.splitTextToSize(dd, LC[3][1]-3) : [""];
     d.forEach((t,k)=> labLines.push(k===0 ? {date:fmtDAU(e.date).replace(/\/(\d\d)(\d\d)$/,"/$2"), start:e.start, finish:e.finish, desc:t, emp:e.worker, hrs:hrs(netHrs(e))} : {desc:t}));
   });
   if(labLines.length) labLines.push({desc:"TOTAL HOURS", hrs:hrs(jobHours(j)), bold:true});
@@ -2020,7 +2034,7 @@ function reminderCardHTML(){
       ${p.error==="needs-auth" ? `<div class="mute" style="color:var(--warn)">One more permission is needed: in Apps Script run <b>setup</b> once and click Allow, then redeploy.</div>` :
         p.ready ? `<div class="mute">Firebase connected ✓ · ${names.length ? `${names.length} ${names.length===1?"person has":"people have"} reminders on: ${esc(names.join(", "))}` : "nobody has turned reminders on yet"}.</div>
           <button class="ghost" id="pSetup" style="padding:4px 0">Change Firebase setup…</button>`
-        : `<div class="mute">Push notifications need a free Firebase project – see <b>Part A3</b> of the guide, then tap below.</div><button class="pri" id="pSetup" style="width:100%;margin-top:8px">Set up Firebase…</button>`}
+        : `<div class="mute">Push notifications need a free Firebase project – see <b>Part A2b</b> of the guide, then tap below.</div><button class="pri" id="pSetup" style="width:100%;margin-top:8px">Set up Firebase…</button>`}
       <label ${lab}><input type="checkbox" id="rOn" style="width:auto" ${s.reminderOn?"checked":""}> Remind workers at</label>
       <input type="time" id="rTime" value="${esc(s.reminderTime||"17:00")}">
       <label>On these days</label>
