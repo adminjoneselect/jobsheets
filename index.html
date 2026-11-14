@@ -119,13 +119,15 @@ const fmtDAU = s => { if(!s) return ""; const [y,m,d]=s.split("-"); return d+"/"
 const addDays = (s,n) => { const d=parseD(s); d.setDate(d.getDate()+n); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); };
 const mins = t => { if(!t) return null; const [h,m]=t.split(":").map(Number); return h*60+m; };
 const grossMin = e => { const a=mins(e.start), b=mins(e.finish); if(a==null||b==null) return 0; let x=b-a; if(x<0)x+=1440; return x; };
-const netHrs = e => Math.max(0, grossMin(e) - lunchMinFor(e)) / 60;   // lunch comes off the job it fell in
+const LEAVE = {rdo:"RDO", al:"ANNUAL LEAVE", sick:"SICK LEAVE"};   // leave days: description filled in, hours typed in, no lunch
+const dayHours = () => Math.round((Number(S.settings.ordinaryHours)||38)/5*100)/100;   // e.g. 38 h week -> 7.6 h day
+const netHrs = e => e.leave ? (Number(e.hours)||0) : Math.max(0, grossMin(e) - lunchMinFor(e)) / 60;   // lunch comes off the job it fell in
 const hrs = n => { const r = Math.round(n*100)/100; return (r % 1 === 0 ? r.toFixed(0) : String(r)); };
 const money = n => "$" + (Number(n)||0).toLocaleString("en-AU",{minimumFractionDigits:2,maximumFractionDigits:2});
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 const clone = o => JSON.parse(JSON.stringify(o ?? null));
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),2400); }
-const APP_VERSION = "2026.11.14.1";   // must match APP_VERSION in Code.gs
+const APP_VERSION = "2026.11.14.2";   // must match APP_VERSION in Code.gs
 const verNum = v => String(v||"0").split(".").map(n=>parseInt(n,10)||0);
 const verCmp = (a,b) => { const x=verNum(a), y=verNum(b); for(let i=0;i<Math.max(x.length,y.length);i++){ const d=(x[i]||0)-(y[i]||0); if(d) return d; } return 0; };
 /* compare this page with the Google script after each load */
@@ -985,7 +987,7 @@ function overlapWith(e, L){                     // minutes of this entry's time 
   const f = f0 < s ? f0 + 1440 : f0, lf = lf0 < ls ? lf0 + 1440 : lf0;
   return Math.max(0, Math.min(f, lf) - Math.max(s, ls));
 }
-function lunchMinFor(e){ const L = lunchFor(e.worker, e.date); return L ? overlapWith(e, L) : (Number(e.lunch)||0); }   // older entries kept minutes
+function lunchMinFor(e){ if(e.leave) return 0; const L = lunchFor(e.worker, e.date); return L ? overlapWith(e, L) : (Number(e.lunch)||0); }   // older entries kept minutes
 function lunchText(L){ return !L ? "" : L.none ? "No lunch taken" : (L.start && L.finish ? `${L.start}–${L.finish}` : ""); }
 function lunchHTML(worker, date){
   const L = lunchFor(worker, date);
@@ -1415,7 +1417,12 @@ function editHours(h){
   const e = isNew ? {id:uid(), date:S.ts.date, worker, start:"07:00", finish:"15:30", lunch:0,
                      rego:regoFor(worker), wip:false, desc:"", jobNo:"", customer:"", ioa:false, comment:""} : clone(h);
   const open = S.jobs.filter(j=>j.status!=="complete").sort((a,b)=>String(b.jobNo).localeCompare(String(a.jobNo),undefined,{numeric:true}));
+  const lv = (k, t) => `<label style="flex:1;display:flex;gap:6px;align-items:center;justify-content:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin:0;border:1px solid var(--line,#ddd);border-radius:10px;padding:9px 4px;background:var(--card,#fff)"><input type="checkbox" data-lv="${k}" style="width:auto;margin:0" ${e.leave===k?"checked":""}>${t}</label>`;
   openModal(`<h3>${isNew?"Add hours":"Edit hours"} – ${esc(worker)}</h3><div class="mute">${fmtD(e.date)}</div>
+    <label>Day off?</label><div class="row" style="gap:6px">${lv("rdo","RDO")}${lv("al","Annual leave")}${lv("sick","Sick day")}</div>
+    <div id="hLeave" style="display:none"><label>Hours</label><input id="hLH" type="number" step="0.1" min="0" max="24" inputmode="decimal" value="${e.leave ? esc(e.hours) : dayHours()}">
+      <div class="mute" style="font-size:12px;margin-top:4px">A full day is filled in – change it for a part day. Shows on the timesheet as <b id="hLT"></b>.</div></div>
+    <div id="hWork">
     ${isNew && !tsOnlyMe()?`<label>Job</label><select id="hJob"><option value="">Not on a job card – type it in below</option>${open.map(j=>`<option value="${esc(j.id)}">#${esc(j.jobNo)} · ${esc(j.customer)}</option>`).join("")}</select>`:""}
     <div id="hFree"><div class="grid2"><div><label>Job number</label><input id="hNo" value="${esc(e.jobNo)}" placeholder="${tsOnlyMe()?"e.g. 70424":"optional"}" inputmode="numeric" list="hNoList" autocomplete="off"><datalist id="hNoList">${knownJobs().map(k=>`<option value="${esc(k.no)}">${esc(k.cust)}</option>`).join("")}</datalist></div>
     <div><label>Customer</label><input id="hCu" value="${esc(e.customer)}" placeholder="e.g. GW, Prison, Shed"></div></div></div>
@@ -1425,20 +1432,42 @@ function editHours(h){
     <div class="grid2"><div><label>Vehicle rego</label><input id="hR" value="${esc(e.rego)}" style="text-transform:uppercase"></div>
     <div><label>&nbsp;</label><label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:15px;color:var(--ink);font-weight:400;margin:0;padding:9px 0"><input type="checkbox" id="hW" style="width:auto" ${e.wip?"checked":""}> WIP</label></div></div>
     <label>Job Description / Location</label><textarea id="hD" placeholder="e.g. Shed Time, Gippsland Water Factory, Superior, Ect">${esc(e.desc)}</textarea>
+    </div>
     ${extrasHTML(e, "h")}
     <div class="mute" id="hHrs" style="margin-top:8px"></div>
     <div class="actions">${isNew?"":`<button class="danger" id="hDel" style="margin-right:auto">Delete</button>`}<button id="mCancel">Cancel</button><button class="pri" id="hSave">Save</button></div>`);
   const upd = () => { const x={start:$("#hS").value, finish:$("#hF").value}; const L = readLunch(); const lm = overlapWith(x, L);
     $("#hHrs").textContent = `Hours: ${hrs(Math.max(0,grossMin(x)-lm)/60)}` + (L.none ? " (no lunch taken)" : lm ? ` (${hrs(grossMin(x)/60)} less ${lm} min lunch)` : ""); };
   ["hS","hF"].forEach(id => $("#"+id).oninput = upd); bindLunch(upd); upd();
+  const leaveSel = () => { const c = document.querySelector("[data-lv]:checked"); return c ? c.dataset.lv : ""; };
+  const showLeave = () => { const k = leaveSel();
+    $("#hWork").style.display = k ? "none" : ""; $("#hLeave").style.display = k ? "" : "none";
+    const ioa = $("#hIoa").closest("label"); if(ioa) ioa.style.display = k ? "none" : "";
+    $("#hHrs").style.display = k ? "none" : "";
+    $("#hCom").placeholder = k ? "e.g. Doctor's certificate" : "e.g. EBA site, etc.";
+    const note = $("#hCom").nextElementSibling; if(note) note.textContent = k ? "Comments are added after " + LEAVE[k] + " on the timesheet." : "IOA and comments are added to the description on the timesheet.";
+    if(k) $("#hLT").textContent = LEAVE[k]; };
+  document.querySelectorAll("[data-lv]").forEach(c => c.onchange = () => { if(c.checked) document.querySelectorAll("[data-lv]").forEach(o => { if(o!==c) o.checked = false; }); showLeave(); });
+  showLeave();
   if($("#hJob")) $("#hJob").onchange = () => { $("#hFree").style.display = $("#hJob").value ? "none" : ""; };
   $("#hNo").oninput = () => { const k = knownJobs().find(x=>x.no===$("#hNo").value.trim()); if(k && k.cust && !$("#hCu").value.trim()) $("#hCu").value = k.cust; };
   $("#mCancel").onclick = closeModal;
   if(!isNew) $("#hDel").onclick = async () => { try{ await call("deleteHours", {id:e.id}); S.hours = S.hours.filter(x=>x.id!==e.id); closeModal(); render(); toast("Removed"); }catch(err){ writeErr(err); } };
   $("#hSave").onclick = async () => {
+    const lk = leaveSel();
+    if(lk){   // RDO / annual leave / sick day – no times, no lunch, no job
+      const h = Number($("#hLH").value);
+      if(!(h > 0 && h <= 24)){ toast("Enter the hours for the day (e.g. " + dayHours() + ")."); return; }
+      const entry = {id:e.id, date:e.date, worker, leave:lk, hours:Math.round(h*100)/100, start:"", finish:"", lunch:0, rego:"", wip:false,
+                     desc:LEAVE[lk], jobNo:"", customer:"", ioa:false, comment:$("#hCom").value.trim()};
+      $("#hSave").disabled = true;
+      try { await call("saveHours", entry); S.hours = (S.hours||[]).filter(x=>x.id!==entry.id).concat([entry]); render(); closeModal(); toast("Saved"); }
+      catch(err){ $("#hSave").disabled=false; writeErr(err); }
+      return;
+    }
     const L = readLunch();
     const ne = {date:e.date, worker, start:$("#hS").value, finish:$("#hF").value, lunch:0,
-                rego:$("#hR").value.trim().toUpperCase(), wip:$("#hW").checked, desc:$("#hD").value.trim(), ioa:$("#hIoa").checked, comment:$("#hCom").value.trim()};
+                rego:$("#hR").value.trim().toUpperCase(), wip:$("#hW").checked, desc:$("#hD").value.trim(), ioa:$("#hIoa").checked, comment:$("#hCom").value.trim(), leave:""};
     if(!ne.start || !ne.finish){ toast("Enter start and finish times."); return; }
     if(!L.none && (!L.start || !L.finish)){ toast("Enter lunch start and finish, or tick No lunch taken."); return; }
     ne.lunch = overlapWith(ne, L);
@@ -1480,12 +1509,15 @@ function tsRows(worker, date){
 }
 function tsLines(worker, date){
   const rows = tsRows(worker, date);
-  const lines = rows.map(({j,e}) => ({jobNo:j.jobNo, cust:j.customer, desc:descFull(e, e.desc||j.desc||""), start:e.start, finish:e.finish, rego:e.rego||"", wip:e.wip?"WIP":"", hours:hrs(grossMin(e)/60)}));
+  const lines = rows.map(({j,e}) => e.leave
+    ? {jobNo:"", cust:"", desc:descFull(e, LEAVE[e.leave]), start:"", finish:"", rego:"", wip:"", hours:hrs(netHrs(e)), bold:true}
+    : {jobNo:j.jobNo, cust:j.customer, desc:descFull(e, e.desc||j.desc||""), start:e.start, finish:e.finish, rego:e.rego||"", wip:e.wip?"WIP":"", hours:hrs(grossMin(e)/60)});
+  const worked = rows.some(r=>!r.e.leave);
   const lunch = rows.reduce((s,r)=>s+lunchMinFor(r.e),0);
   const total = rows.reduce((s,r)=>s+netHrs(r.e),0);
   const LB = lunchFor(worker, date);
   if(isOnCall(worker, date)) lines.push({jobNo:"", cust:"", desc:"ON CALL", start:"", finish:"", rego:"", wip:"", hours:"", bold:true});
-  if(LB && LB.none) lines.push({jobNo:"", cust:"", desc:"NO LUNCH TAKEN", start:"", finish:"", rego:"", wip:"", hours:"", bold:true});
+  if(!worked){} else if(LB && LB.none) lines.push({jobNo:"", cust:"", desc:"NO LUNCH TAKEN", start:"", finish:"", rego:"", wip:"", hours:"", bold:true});
   else if(LB && LB.start) lines.push({jobNo:"", cust:"", desc:"LUNCH BREAK", start:LB.start, finish:LB.finish, rego:"", wip:"", hours: lunch ? "-"+hrs(lunch/60) : ""});
   else if(lunch) lines.push({jobNo:"", cust:"", desc:`LUNCH BREAK (${lunch} min)`, start:"", finish:"", rego:"", wip:"", hours:"-"+hrs(lunch/60)});
   if(rows.length) lines.push({jobNo:"", cust:"", desc:"TOTAL HOURS", start:"", finish:"", rego:"", wip:"", hours:hrs(total), bold:true});
@@ -1525,7 +1557,7 @@ function viewTimesheet(){
       </table>
       <div class="ft"><span style="width:42%">Timesheet</span><span style="width:30%">Ver. 2</span><span>timsh doc:1</span></div>
     </div></div>
-    ${rows.length?`<h2><span>Entries (tap to edit)</span></h2><div class="card" style="padding:2px 14px">${rows.map(({j,e,free})=>`<div class="list-item" ${free?`data-h="${esc(e.id)}"`:`data-j="${esc(j.id)}"`}><div class="grow">${j.jobNo?`<b>#${esc(j.jobNo)}</b> `:""}${esc(j.customer)}${free?` <span class="pill done">No job card</span>`:""}${e.ioa?` <span class="pill">IOA</span>`:""}<div class="mute">${esc(e.start)}–${esc(e.finish)} ${lunchMinFor(e)?`· lunch ${lunchMinFor(e)}m off`:""}</div></div><div class="num">${hrs(netHrs(e))} h</div></div>`).join("")}</div>`
+    ${rows.length?`<h2><span>Entries (tap to edit)</span></h2><div class="card" style="padding:2px 14px">${rows.map(({j,e,free})=>`<div class="list-item" ${free?`data-h="${esc(e.id)}"`:`data-j="${esc(j.id)}"`}><div class="grow">${e.leave?`<b>${esc(LEAVE[e.leave])}</b>${e.comment?`<div class="mute">${esc(e.comment)}</div>`:""}`:`${j.jobNo?`<b>#${esc(j.jobNo)}</b> `:""}${esc(j.customer)}${free?` <span class="pill done">No job card</span>`:""}${e.ioa?` <span class="pill">IOA</span>`:""}<div class="mute">${esc(e.start)}–${esc(e.finish)} ${lunchMinFor(e)?`· lunch ${lunchMinFor(e)}m off`:""}</div>`}</div><div class="num">${hrs(netHrs(e))} h</div></div>`).join("")}</div>`
       : `<div class="empty">No hours recorded for ${esc(S.ts.worker||"this person")} on ${fmtD(S.ts.date)}.<br>${tsOnlyMe()?"Tap <b>+ Add hours</b> to put in your hours for each job.":"Hours added on job cards show up here, or tap <b>+ Add hours</b>."}</div>`}`;
   const setD = d => { S.ts.date = d; viewTimesheet(); };
   if($("#tsW")) $("#tsW").onchange = e => { S.ts.worker = e.target.value; viewTimesheet(); };
